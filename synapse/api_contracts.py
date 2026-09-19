@@ -110,4 +110,3 @@ class ErrorResponse(BaseModel):
     error: str
     message: str
     details: dict = Field(default_factory=dict)
-

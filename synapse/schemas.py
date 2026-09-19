@@ -299,4 +299,3 @@ RECORD_PAYLOADS: dict[RecordKind, type[BaseModel]] = {
     RecordKind.CLASS_ANALYTICS: ClassAnalytics,
     RecordKind.CONCEPT_GRAPH: ConceptGraph,
 }
-

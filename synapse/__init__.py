@@ -1,1 +1,1 @@
-"""Synapse domain layer."""
+# synapse package

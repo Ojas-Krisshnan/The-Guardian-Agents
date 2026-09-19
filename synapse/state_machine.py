@@ -121,4 +121,3 @@ def resolve_review_status(passed: bool, revisions_so_far: int) -> ReviewStatus:
 def state_after_review(status: ReviewStatus) -> RunState:
     """FAILED loops back to TAILORING; PASSED and REVISION_LIMIT_REACHED both go to NOTE_SAVED."""
     return RunState.TAILORING if status is ReviewStatus.FAILED else RunState.NOTE_SAVED
-
