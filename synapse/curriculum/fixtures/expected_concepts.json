@@ -1,0 +1,42 @@
+[
+  {
+    "id": "c1000000-0000-0000-0000-000000000001",
+    "name": "Recursion",
+    "summary": "Foundational technique where a function solves a problem by calling itself with smaller sub-problems until a trivial case is reached.",
+    "prerequisites": [],
+    "created_at": "2026-09-19T12:00:00Z",
+    "updated_at": "2026-09-19T12:00:00Z"
+  },
+  {
+    "id": "c1000000-0000-0000-0000-000000000002",
+    "name": "Base Case",
+    "summary": "The terminating condition that yields a direct result without further recursive calls, preventing unbounded recursion.",
+    "prerequisites": [
+      "c1000000-0000-0000-0000-000000000001"
+    ],
+    "created_at": "2026-09-19T12:00:00Z",
+    "updated_at": "2026-09-19T12:00:00Z"
+  },
+  {
+    "id": "c1000000-0000-0000-0000-000000000003",
+    "name": "Recursive Case",
+    "summary": "The execution path where the problem is reduced and the function invokes itself on smaller inputs to build toward the final solution.",
+    "prerequisites": [
+      "c1000000-0000-0000-0000-000000000001",
+      "c1000000-0000-0000-0000-000000000002"
+    ],
+    "created_at": "2026-09-19T12:00:00Z",
+    "updated_at": "2026-09-19T12:00:00Z"
+  },
+  {
+    "id": "c1000000-0000-0000-0000-000000000004",
+    "name": "Termination",
+    "summary": "The formal guarantee that every recursive call makes monotonic progress toward a base case, preventing call stack overflow.",
+    "prerequisites": [
+      "c1000000-0000-0000-0000-000000000002",
+      "c1000000-0000-0000-0000-000000000003"
+    ],
+    "created_at": "2026-09-19T12:00:00Z",
+    "updated_at": "2026-09-19T12:00:00Z"
+  }
+]
