@@ -1,0 +1,84 @@
+{
+  "concepts": [
+    {
+      "id": "c_var",
+      "name": "Variables",
+      "summary": "Data storage in named identifiers",
+      "prerequisites": []
+    },
+    {
+      "id": "c_func",
+      "name": "Functions",
+      "summary": "Reusable subroutines and scoping",
+      "prerequisites": ["c_var"]
+    },
+    {
+      "id": "c_rec",
+      "name": "Recursion",
+      "summary": "Functions calling themselves to solve smaller instances",
+      "prerequisites": ["c_func"]
+    },
+    {
+      "id": "c_trees",
+      "name": "Trees",
+      "summary": "Hierarchical node data structures",
+      "prerequisites": ["c_rec"]
+    },
+    {
+      "id": "c_isolated",
+      "name": "EthicsInCS",
+      "summary": "Societal and ethical implications in software",
+      "prerequisites": []
+    }
+  ],
+  "students": ["student_alice", "student_bob", "student_charlie"],
+  "analysis_payloads": [
+    {
+      "student_id": "student_alice",
+      "concept_id": "c_rec",
+      "mastery_estimate": 0.85,
+      "trend": "improving",
+      "cycle_number": 2
+    },
+    {
+      "student_id": "student_bob",
+      "concept_id": "c_rec",
+      "mastery_estimate": 0.65,
+      "trend": "stable",
+      "cycle_number": 2
+    },
+    {
+      "student_id": "student_charlie",
+      "concept_id": "c_rec",
+      "mastery_estimate": 0.35,
+      "trend": "still_weak",
+      "cycle_number": 2
+    }
+  ],
+  "student_notes": [
+    {
+      "student_id": "student_alice",
+      "concept_id": "c_rec",
+      "version": 2,
+      "markdown": "# Recursion\nRecursion relies heavily on [[Functions]] and basic [[Variables]]. Make sure you define a base case!"
+    },
+    {
+      "student_id": "student_alice",
+      "concept_id": "c_func",
+      "version": 1,
+      "markdown": "# Functions\nFunctions define callable logic with arguments and return types."
+    },
+    {
+      "student_id": "student_alice",
+      "concept_id": "c_isolated",
+      "version": 1,
+      "markdown": "# EthicsInCS\nConsider the impact of algorithmic bias on users."
+    },
+    {
+      "student_id": "student_bob",
+      "concept_id": "c_rec",
+      "version": 1,
+      "markdown": "# Recursion\nNeed to understand [[NonExistentConcept]] and [[QuantumEntanglement]]."
+    }
+  ]
+}
