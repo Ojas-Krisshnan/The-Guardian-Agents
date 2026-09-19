@@ -23,9 +23,11 @@ A student cannot tell those apart from a raw error, so we do it for them.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 import json
 import time
-from typing import Any, Type
+from typing import Any, Protocol, Type, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -34,7 +36,6 @@ from .budget import Budget
 from .config import Settings
 
 API = "https://openrouter.ai/api/v1"
-
 
 class ModelError(RuntimeError):
     """Base for everything that can go wrong at the model boundary."""
@@ -128,6 +129,7 @@ def complete(
     model: str | None = None,
     step: str = "call",
     timeout: float = 120.0,
+    provider: Provider | str | None = None,
 ) -> Any:
     """Call a model. Returns a parsed `schema` instance, or raw text if no
     schema was asked for.
@@ -138,10 +140,11 @@ def complete(
     """
     budget.check_tokens()                       # refuse to start, not to finish
 
-    primary = model or settings.model
+    cfg = get_provider_config(settings, provider)
+    primary = model or cfg.default_model
     attempts: list[tuple[str, str]] = [(primary, "primary")]
-    if settings.fallback_model and settings.fallback_model != primary:
-        attempts.append((settings.fallback_model, "fallback"))
+    if cfg.fallback_model and cfg.fallback_model != primary:
+        attempts.append((cfg.fallback_model, "fallback"))
 
     last_text = ""
     with _Span(settings, f"llm:{step}", {"model": primary, "step": step}) as span:
@@ -157,8 +160,8 @@ def complete(
 
             t0 = time.time()
             try:
-                r = httpx.post(f"{API}/chat/completions", json=body, timeout=timeout,
-                               headers={"Authorization": f"Bearer {settings.api_key}"})
+                r = httpx.post(f"{cfg.base_url}/chat/completions", json=body, timeout=timeout,
+                               headers={"Authorization": f"Bearer {cfg.api_key}"})
             except httpx.RequestError as e:
                 if role == "fallback":
                     raise ModelError(
@@ -204,7 +207,7 @@ def complete(
 
             # One repair pass. Show the model its own output and the error -
             # a second identical request usually fails identically.
-            repaired = _repair(settings, budget, messages, last_text, schema, mid, timeout)
+            repaired = _repair(settings, budget, messages, last_text, schema, mid, timeout, cfg)
             if repaired is not None:
                 return repaired
             if role == "fallback":
@@ -244,7 +247,7 @@ def _parse(text: str, schema: Type[BaseModel]):
         return None
 
 
-def _repair(settings, budget, messages, bad_text, schema, mid, timeout):
+def _repair(settings, budget, messages, bad_text, schema, mid, timeout, cfg: ProviderConfig | None = None):
     budget.check_tokens()
     try:
         schema.model_validate_json(_strip_fence(bad_text))
@@ -260,9 +263,11 @@ def _repair(settings, budget, messages, bad_text, schema, mid, timeout):
             f"Required JSON schema:\n{json.dumps(schema.model_json_schema())}\n\n"
             "Reply with the corrected JSON object and nothing else."},
     ]
+    base_url = cfg.base_url if cfg else API
+    api_key = cfg.api_key if cfg else settings.api_key
     try:
-        r = httpx.post(f"{API}/chat/completions", timeout=timeout,
-                       headers={"Authorization": f"Bearer {settings.api_key}"},
+        r = httpx.post(f"{base_url}/chat/completions", timeout=timeout,
+                       headers={"Authorization": f"Bearer {api_key}"},
                        json={"model": mid, "max_tokens": settings.max_tokens,
                              "temperature": 0, "messages": fix,
                              "response_format": {"type": "json_object"}})
@@ -275,3 +280,66 @@ def _repair(settings, budget, messages, bad_text, schema, mid, timeout):
     data = r.json()
     budget.record_tokens((data.get("usage") or {}).get("total_tokens", 0))
     return _parse(data["choices"][0]["message"]["content"] or "", schema)
+
+
+# ---------------------------------------------------------------------------
+# Provider Abstraction (Contracts.md Section D.3)
+# ---------------------------------------------------------------------------
+
+class Provider(str, Enum):
+    OPENROUTER = "openrouter"
+    NIM = "nim"
+
+
+class ProviderNotConfigured(RuntimeError):
+    """Raised when the selected provider has no API key. NEVER caught to switch providers."""
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: Provider
+    api_key: str
+    base_url: str
+    default_model: str
+    fallback_model: str | None = None
+
+
+@runtime_checkable
+class ModelClient(Protocol):
+    """Shape shared by the real HTTP client and every stub.py stand-in."""
+    async def complete(
+        self,
+        *,
+        messages: list[dict],
+        schema: type[BaseModel] | None,
+        model: str,
+        max_tokens: int,
+        timeout: float,
+    ) -> Any: ...
+
+
+def get_provider_config(settings: Settings, provider: Provider | str | None = None) -> ProviderConfig:
+    """Resolve provider config. Explicit argument > SLICE_PROVIDER > OpenRouter. No silent fallback."""
+    if isinstance(provider, str):
+        provider = Provider(provider.lower())
+    chosen = provider or Provider(settings.provider)
+    if chosen is Provider.NIM:
+        if not settings.nim_api_key:
+            raise ProviderNotConfigured("SLICE_PROVIDER=nim but NIM_API_KEY is not set")
+        return ProviderConfig(
+            name=Provider.NIM,
+            api_key=settings.nim_api_key,
+            base_url=settings.nim_base_url,
+            default_model=settings.nim_model,
+            fallback_model=settings.nim_fallback_model,
+        )
+    if not settings.openrouter_api_key:
+        raise ProviderNotConfigured("OPENROUTER_API_KEY is not set")
+    return ProviderConfig(
+        name=Provider.OPENROUTER,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        default_model=settings.slice_model,
+        fallback_model=settings.slice_fallback_model,
+    )
+
