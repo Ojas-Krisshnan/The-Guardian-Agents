@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Diagnostic Quiz - Synapse</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 2rem; }
+        .card { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; border: 1px solid #334155; }
+        h1 { color: #a855f7; margin-top: 0; }
+        .q-card { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
+        .q-text { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; color: #f1f5f9; }
+        .opt-label { display: block; background: #1e293b; border: 1px solid #475569; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.5rem; cursor: pointer; }
+        .opt-label:hover { border-color: #a855f7; }
+        input[type="radio"] { margin-right: 0.75rem; }
+        button { background: #9333ea; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1rem; }
+        button:hover { background: #7e22ce; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Diagnostic Assessment: {{ test.concept_name }}</h1>
+        <p>Answer the questions below to diagnose your mastery and receive personalized study notes.</p>
+
+        <form method="POST" action="/web/student/attempts/{{ test.id }}">
+            <input type="hidden" name="test_id" value="{{ test.id }}">
+            <input type="hidden" name="run_id" value="{{ run_id }}">
+
+            {% for q in test.questions %}
+            <div class="q-card">
+                <div class="q-text">{{ loop.index }}. {{ q.text }}</div>
+                {% for opt in q.options %}
+                <label class="opt-label">
+                    <input type="radio" name="q_{{ q.id }}" value="{{ opt }}" required>
+                    {{ opt }}
+                </label>
+                {% endfor %}
+            </div>
+            {% endfor %}
+
+            <button type="submit">Submit Assessment</button>
+        </form>
+    </div>
+</body>
+</html>

@@ -15,7 +15,7 @@ handler happens to be "wait".
 """
 from __future__ import annotations
 
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from . import callback
 from .budget import Budget, BudgetExceeded
@@ -25,7 +25,7 @@ from .records import RunState
 from .store import Store
 
 # A handler takes the context and returns the state to move to next.
-Handler = Callable[["Context"], RunState]
+Handler = Callable[["Context"], Any]
 
 
 class Context:
@@ -45,11 +45,12 @@ class Context:
 class Flow(Protocol):
     """What a domain must provide. See demo/flow.py."""
     name: str
-    handlers: dict[RunState, Handler]
+    handlers: dict[Any, Handler]
+    state_type: Any = None
 
 
 def advance(store: Store, run_id: str, flow: Flow, settings: Settings,
-            max_steps: int = 40) -> RunState:
+            max_steps: int = 40) -> Any:
     """Run until the run is finished, suspended, or out of budget.
 
     Call it again later to resume. `max_steps` is a fence on the state machine
@@ -57,45 +58,57 @@ def advance(store: Store, run_id: str, flow: Flow, settings: Settings,
     """
     callback.sweep(store, run_id)          # expire stale questions first
     ctx = Context(store, run_id, settings)
+    state_type = getattr(flow, "state_type", None)
 
     for _ in range(max_steps):
-        state = store.get_state(run_id)
+        state = store.get_state(run_id, state_type=state_type) if state_type is not None else store.get_state(run_id)
 
-        if state.is_terminal:
+        if getattr(state, "is_terminal", False):
             return state
-        if state.is_suspended:
+        if getattr(state, "is_suspended", False):
             return state                    # waiting on a human: nothing to do
 
         handler = flow.handlers.get(state)
+        if handler is None and hasattr(state, "value"):
+            handler = flow.handlers.get(state.value)
         if handler is None:
-            return _fail(ctx, "no_handler", f"No handler for state {state.value}.")
+            val = getattr(state, "value", str(state))
+            return _fail(ctx, "no_handler", f"No handler for state {val}.", state, state_type)
 
         try:
             nxt = handler(ctx)
-        except BudgetExceeded as e:
-            return _fail(ctx, "budget", str(e))
-        except PoolExhausted as e:
-            return _fail(ctx, "pool_exhausted", str(e))
-        except CapExhausted as e:
-            return _fail(ctx, "cap_exhausted", str(e))
-        except ModelError as e:
-            return _fail(ctx, "model", str(e))
+        except (BudgetExceeded, PoolExhausted, CapExhausted, ModelError) as e:
+            k = "budget" if isinstance(e, BudgetExceeded) else ("pool_exhausted" if isinstance(e, PoolExhausted) else ("cap_exhausted" if isinstance(e, CapExhausted) else "model"))
+            return _fail(ctx, k, str(e), state, state_type)
 
-        if nxt is not state:
+        if nxt is not state and nxt != state:
             store.set_state(run_id, nxt)
-        elif nxt.is_suspended or nxt.is_terminal:
+        elif getattr(nxt, "is_suspended", False) or getattr(nxt, "is_terminal", False):
             store.set_state(run_id, nxt)
         else:
+            val = getattr(state, "value", str(state))
             return _fail(ctx, "no_progress",
-                         f"Handler for {state.value} returned its own state without "
-                         "suspending. That is a loop; fix the handler.")
+                         f"Handler for {val} returned its own state without "
+                         "suspending. That is a loop; fix the handler.", state, state_type)
 
-    return _fail(ctx, "max_steps", f"Did not settle within {max_steps} steps.")
+    cur = store.get_state(run_id, state_type=state_type) if state_type is not None else store.get_state(run_id)
+    return _fail(ctx, "max_steps", f"Did not settle within {max_steps} steps.", cur, state_type)
 
 
-def _fail(ctx: Context, kind: str, detail: str) -> RunState:
+def _fail(ctx: Context, kind: str, detail: str,
+          current_state: Any = None, state_type: Any = None) -> Any:
     """Record WHY a run stopped, in the history, where a replay will show it.
     A run that fails without leaving a reason is the thing you cannot debug."""
     ctx.append("failure", {"kind": kind, "detail": detail}, produced_by="runner")
+    try:
+        ctx.store.update_meta(ctx.run_id, {"error": detail})
+    except Exception:
+        pass
+    if state_type is not None:
+        if hasattr(state_type, "FAILED"):
+            failed = getattr(state_type, "FAILED")
+            ctx.store.set_state(ctx.run_id, failed)
+            return failed
+        return current_state if current_state is not None else ctx.store.get_state(ctx.run_id, state_type=state_type)
     ctx.store.set_state(ctx.run_id, RunState.FAILED)
     return RunState.FAILED

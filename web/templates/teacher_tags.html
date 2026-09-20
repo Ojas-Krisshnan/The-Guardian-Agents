@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Teacher Tag Confirmation - Synapse</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 2rem; }
+        .card { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; border: 1px solid #334155; }
+        h1 { color: #38bdf8; margin-top: 0; }
+        .concept-item { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        label { display: block; font-weight: 600; margin-bottom: 0.25rem; color: #94a3b8; }
+        input, textarea { width: 100%; padding: 0.5rem; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: #f8fafc; box-sizing: border-box; margin-bottom: 0.75rem; }
+        button { background: #0284c7; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1rem; }
+        button:hover { background: #0369a1; }
+        .alert { padding: 0.75rem; background: #1e3a8a; border-radius: 6px; margin-bottom: 1.5rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Teacher Tag Confirmation</h1>
+        <div class="alert">
+            Run ID: <strong>{{ run_id }}</strong> | Topic: <strong>{{ concept_name }}</strong>
+        </div>
+        <p>Review and refine the curriculum concepts extracted from your lecture notes before test generation proceeds.</p>
+
+        <form method="POST" action="/web/teacher/tags/{{ run_id }}">
+            <input type="hidden" name="run_id" value="{{ run_id }}">
+            {% for concept in concepts %}
+            <div class="concept-item">
+                <label>Concept Name</label>
+                <input type="text" name="concept_name_{{ loop.index0 }}" value="{{ concept.name }}">
+                <label>Concept Summary</label>
+                <textarea name="concept_summary_{{ loop.index0 }}" rows="3">{{ concept.summary }}</textarea>
+                <input type="hidden" name="concept_id_{{ loop.index0 }}" value="{{ concept.id }}">
+            </div>
+            {% endfor %}
+
+            <button type="submit">Confirm and Generate Diagnostic Test</button>
+        </form>
+    </div>
+</body>
+</html>

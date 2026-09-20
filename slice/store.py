@@ -93,26 +93,28 @@ class Store:
 
     # ---------------------------------------------------------------- runs
 
-    def create_run(self, domain: str, meta: dict[str, Any] | None = None) -> str:
-        run_id, now = new_id("run"), time.time()
-        self.db.execute(
-            "INSERT INTO runs(id, domain, state, created_at, updated_at, meta_json)"
-            " VALUES (?,?,?,?,?,?)",
-            (run_id, domain, RunState.DRAFTING.value, now, now, json.dumps(meta or {})),
-        )
+    def create_run(self, domain: str, meta: dict[str, Any] | None = None,
+                   initial_state: Any = RunState.DRAFTING) -> str:
+        run_id, now, s_val = new_id("run"), time.time(), getattr(initial_state, "value", str(initial_state))
+        self.db.execute("INSERT INTO runs(id, domain, state, created_at, updated_at, meta_json) VALUES (?,?,?,?,?,?)",
+                        (run_id, domain, s_val, now, now, json.dumps(meta or {})))
         return run_id
 
-    def get_state(self, run_id: str) -> RunState:
+    def get_state(self, run_id: str, state_type: Any | None = None) -> Any:
         row = self.db.execute("SELECT state FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(f"no such run: {run_id}")
-        return RunState(row["state"])
+        raw = row["state"]
+        if state_type is not None:
+            return state_type(raw)
+        try:
+            return RunState(raw)
+        except ValueError:
+            return raw
 
-    def set_state(self, run_id: str, state: RunState) -> None:
-        self.db.execute(
-            "UPDATE runs SET state=?, updated_at=? WHERE id=?",
-            (state.value, time.time(), run_id),
-        )
+    def set_state(self, run_id: str, state: Any) -> None:
+        val = getattr(state, "value", str(state))
+        self.db.execute("UPDATE runs SET state=?, updated_at=? WHERE id=?", (val, time.time(), run_id))
 
     def meta(self, run_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT meta_json FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -122,8 +124,7 @@ class Store:
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT id, domain, state, created_at, updated_at FROM runs"
-            " ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, domain, state, created_at, updated_at FROM runs ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -218,6 +219,12 @@ class Store:
             sql += " AND run_id=?"
             args = (run_id,)
         return [_to_question(r) for r in self.db.execute(sql + " ORDER BY asked_at", args)]
+
+    def update_meta(self, run_id: str, updates: dict[str, Any]) -> None:
+        current = self.meta(run_id)
+        current.update(updates)
+        self.db.execute("UPDATE runs SET meta_json=?, updated_at=? WHERE id=?",
+                        (json.dumps(current), time.time(), run_id))
 
     def close(self) -> None:
         self.db.close()
