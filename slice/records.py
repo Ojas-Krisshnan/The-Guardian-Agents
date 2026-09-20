@@ -86,3 +86,46 @@ class Question:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+from datetime import datetime, timezone
+from typing import Optional
+from pydantic import BaseModel, Field
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _default_run_id() -> str:
+    return new_id("run")
+
+
+def _default_step_id() -> str:
+    return new_id("step")
+
+
+class RunRecord(BaseModel):
+    run_id: str = Field(default_factory=_default_run_id)
+    flow: str
+    state: str
+    scope: dict[str, Any] = Field(default_factory=dict)
+    model_call_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class StepRecord(BaseModel):
+    id: str = Field(default_factory=_default_step_id)
+    run_id: str
+    step_name: str
+    input_data: dict[str, Any]
+    output_data: Optional[dict[str, Any]] = None
+    state_before: str
+    state_after: Optional[str] = None
+    started_at: datetime = Field(default_factory=_now)
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+    retry_count: int = Field(default=0, ge=0)

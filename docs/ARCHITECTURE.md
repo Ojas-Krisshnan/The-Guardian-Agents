@@ -64,10 +64,10 @@ reconstructed into context each turn — never the other way round.
 | | |
 |---|---|
 | `slice/store.py:30` · `SCHEMA` | The tables. Note the two triggers at the bottom |
-| `slice/store.py:133` · `Store.append` | The only way to write. There is no update |
-| `slice/store.py:147` · `Store.latest` | The newest row of a kind — current state only when a kind has one instance per run |
-| `slice/store.py:156` · `Store.history` | Every version, oldest first — the diff a judge wants to see |
-| `slice/store.py:165` · `Store.replay` | The whole run in order |
+| `slice/store.py:173` · `Store.append` | The only way to write. There is no update |
+| `slice/store.py:187` · `Store.latest` | The newest row of a kind — current state only when a kind has one instance per run |
+| `slice/store.py:196` · `Store.history` | Every version, oldest first — the diff a judge wants to see |
+| `slice/store.py:205` · `Store.replay` | The whole run in order |
 
 **The design choice worth copying:** the versions table is append-only, and that
 is enforced by *SQLite triggers* rather than by convention. `UPDATE` or `DELETE`
@@ -94,10 +94,10 @@ fails loudly at the boundary where you can still see it.
 
 | | |
 |---|---|
-| `slice/llm.py:122` · `complete` | Takes a `schema=`; returns a parsed instance, never a string |
-| `slice/llm.py:240` · `_parse` | Validation |
-| `slice/llm.py:247` · `_repair` | One repair pass: shows the model its own output and the validation error |
-| `slice/llm.py:226` · `_strip_fence` | Forgives a markdown fence — a formatting habit, not a broken contract |
+| `slice/llm.py:172` · `complete` | Takes a `schema=`; returns a parsed instance, never a string |
+| `slice/llm.py:295` · `_parse` | Validation |
+| `slice/llm.py:302` · `_repair` | One repair pass: shows the model its own output and the validation error |
+| `slice/llm.py:281` · `_strip_fence` | Forgives a markdown fence — a formatting habit, not a broken contract |
 | `slice/records.py:45` · `Version` | The envelope every record travels in |
 | `slice/retrieve.py:118` · `search` | The corpus boundary — text arrives as a `Chunk` with an id, not as loose prose |
 | `slice/callback.py:37` · `answer` | The human boundary — the one place prose is unavoidable |
@@ -271,8 +271,8 @@ decisions, because every interesting failure is in the middle steps.
 
 | | |
 |---|---|
-| `slice/llm.py:90` · `_Span` | One span per call |
-| `slice/config.py:44` · `Settings.tracing_enabled` | Off unless configured |
+| `slice/llm.py:140` · `_Span` | One span per call |
+| `slice/config.py:64` · `Settings.tracing_enabled` | Off unless configured |
 
 **Tracing no-ops when Langfuse is not set up**, and that is deliberate: no team
 should be blocked at hour zero by an observability signup. Add it at hour four.
@@ -366,10 +366,10 @@ in front of judges.
 
 | | |
 |---|---|
-| `slice/llm.py:66` · `_classify_402` | The two 402s that look identical and mean opposite things |
-| `slice/llm.py:43` · `CapExhausted` | **Your team** is capped — routine, get a top-up |
-| `slice/llm.py:47` · `PoolExhausted` | **The shared account** is empty — every team is about to stop |
-| `slice/llm.py:122` · `complete` | Falls back to a different provider family on 429/5xx |
+| `slice/llm.py:116` · `_classify_402` | The two 402s that look identical and mean opposite things |
+| `slice/llm.py:93` · `CapExhausted` | **Your team** is capped — routine, get a top-up |
+| `slice/llm.py:97` · `PoolExhausted` | **The shared account** is empty — every team is about to stop |
+| `slice/llm.py:172` · `complete` | Falls back to a different provider family on 429/5xx |
 | `slice/callback.py:56` · `sweep` | No expert → recorded unknown, run continues |
 | `slice/retrieve.py:118` · `search` | Empty corpus → say so, invent nothing |
 | `slice/runner.py:96` · `_fail` | Records **why** a run stopped, into the replayable history |

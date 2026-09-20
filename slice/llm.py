@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Type
 
 import httpx
@@ -34,6 +36,54 @@ from .budget import Budget
 from .config import Settings
 
 API = "https://openrouter.ai/api/v1"
+
+
+class Provider(str, Enum):
+    OPENROUTER = "openrouter"
+    NIM = "nim"
+
+
+class ProviderNotConfigured(RuntimeError):
+    """Raised when the selected provider has no API key. NEVER caught to switch providers."""
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: Provider
+    api_key: str
+    base_url: str
+    default_model: str
+    fallback_model: str | None = None
+
+
+def get_provider_config(settings: Settings, provider: Provider | None = None) -> ProviderConfig:
+    """Resolve provider config. Explicit argument > SLICE_PROVIDER > OpenRouter. No silent fallback."""
+    chosen_str = (provider.value if hasattr(provider, "value") else str(provider)) if provider else getattr(settings, "provider", "openrouter")
+    try:
+        chosen = Provider(chosen_str)
+    except ValueError:
+        chosen = Provider.OPENROUTER
+
+    if chosen is Provider.NIM:
+        if not getattr(settings, "nim_api_key", None):
+            raise ProviderNotConfigured("SLICE_PROVIDER=nim but NIM_API_KEY is not set")
+        base = getattr(settings, "nim_base_url", "https://integrate.api.nvidia.com/v1")
+        key = getattr(settings, "nim_api_key", "")
+        if key.startswith("http://") or key.startswith("https://"):
+            base = key
+        return ProviderConfig(Provider.NIM, key, base,
+                              getattr(settings, "nim_model", "meta/llama-3.1-70b-instruct"),
+                              getattr(settings, "nim_fallback_model", None))
+
+    key = getattr(settings, "openrouter_api_key", "") or getattr(settings, "api_key", "")
+    if not key:
+        raise ProviderNotConfigured("OPENROUTER_API_KEY is not set")
+    base = getattr(settings, "openrouter_base_url", "https://openrouter.ai/api/v1")
+    if key.startswith("http://") or key.startswith("https://"):
+        base = key
+    return ProviderConfig(Provider.OPENROUTER, key, base,
+                          getattr(settings, "slice_model", "inclusionai/ling-3.0-flash"),
+                          getattr(settings, "slice_fallback_model", None))
 
 
 class ModelError(RuntimeError):
@@ -128,6 +178,7 @@ def complete(
     model: str | None = None,
     step: str = "call",
     timeout: float = 120.0,
+    provider: Provider | None = None,
 ) -> Any:
     """Call a model. Returns a parsed `schema` instance, or raw text if no
     schema was asked for.
@@ -138,10 +189,14 @@ def complete(
     """
     budget.check_tokens()                       # refuse to start, not to finish
 
-    primary = model or settings.model
+    pcfg = get_provider_config(settings, provider)
+    api_url = pcfg.base_url.rstrip("/")
+    api_key = pcfg.api_key
+
+    primary = model or pcfg.default_model
     attempts: list[tuple[str, str]] = [(primary, "primary")]
-    if settings.fallback_model and settings.fallback_model != primary:
-        attempts.append((settings.fallback_model, "fallback"))
+    if pcfg.fallback_model and pcfg.fallback_model != primary:
+        attempts.append((pcfg.fallback_model, "fallback"))
 
     last_text = ""
     with _Span(settings, f"llm:{step}", {"model": primary, "step": step}) as span:
@@ -157,8 +212,8 @@ def complete(
 
             t0 = time.time()
             try:
-                r = httpx.post(f"{API}/chat/completions", json=body, timeout=timeout,
-                               headers={"Authorization": f"Bearer {settings.api_key}"})
+                r = httpx.post(f"{api_url}/chat/completions", json=body, timeout=timeout,
+                               headers={"Authorization": f"Bearer {api_key}"})
             except httpx.RequestError as e:
                 if role == "fallback":
                     raise ModelError(

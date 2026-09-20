@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Synapse Cycle — Tags Confirmed</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+    .card { background: #1e293b; border-radius: 8px; padding: 2rem; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.5); text-align: center; }
+    h1 { color: #34d399; }
+    .btn { display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Tags Successfully Confirmed</h1>
+    <p>The diagnostic test generation pipeline has been triggered for Run <code>{{ run_id }}</code>.</p>
+    <p>State: <strong>{{ state }}</strong></p>
+    <a class="btn" href="/runs/{{ run_id }}/status">View Live Run Status</a>
+  </div>
+</body>
+</html>

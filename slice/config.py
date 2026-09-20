@@ -39,6 +39,28 @@ class Settings:
     langfuse_public: str
     langfuse_secret: str
     langfuse_host: str
+    provider: str = "openrouter"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    nim_api_key: str | None = None
+    nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nim_model: str = "meta/llama-3.1-70b-instruct"
+    nim_fallback_model: str | None = "nvidia/nemotron-3-ultra"
+    synapse_jwt_secret: str = "dev-secret-change-in-prod"
+    tag_confirmation_timeout_seconds: int = 600
+    database_path: str = "synapse.db"
+    slice_db_path: str = "run.db"
+
+    @property
+    def openrouter_api_key(self) -> str:
+        return self.api_key
+
+    @property
+    def slice_model(self) -> str:
+        return self.model
+
+    @property
+    def slice_fallback_model(self) -> str:
+        return self.fallback_model
 
     @property
     def tracing_enabled(self) -> bool:
@@ -61,4 +83,14 @@ def settings(reload: bool = True) -> Settings:
         langfuse_public       = g("LANGFUSE_PUBLIC_KEY", "").strip(),
         langfuse_secret       = g("LANGFUSE_SECRET_KEY", "").strip(),
         langfuse_host         = g("LANGFUSE_HOST", "https://cloud.langfuse.com").strip(),
+        provider              = g("SLICE_PROVIDER", "openrouter").strip(),
+        openrouter_base_url   = g("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip(),
+        nim_api_key           = g("NIM_API_KEY", "").strip() or None,
+        nim_base_url          = g("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1").strip(),
+        nim_model             = g("NIM_MODEL", "meta/llama-3.1-70b-instruct").strip(),
+        nim_fallback_model    = g("NIM_FALLBACK_MODEL", "nvidia/nemotron-3-ultra").strip() or None,
+        synapse_jwt_secret    = g("SYNAPSE_JWT_SECRET", "dev-secret-change-in-prod").strip(),
+        tag_confirmation_timeout_seconds = int(g("SYNAPSE_TAG_TIMEOUT_SECONDS", "600")),
+        database_path         = g("SYNAPSE_DB_PATH", "synapse.db").strip(),
+        slice_db_path         = g("SLICE_DB", "run.db").strip(),
     )
