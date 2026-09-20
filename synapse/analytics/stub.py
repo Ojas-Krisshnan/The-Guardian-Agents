@@ -1,52 +1,75 @@
-"""
-Deterministic stubs for Person 4 analytics domain for testing without external dependencies.
+# synapse/analytics/stub.py
+"""Stub-first test doubles and canned data helpers for Person 4 analytics.
+
+Analytics is entirely deterministic logic (no LLM calls required).
+This stub provides quick sample records for testing and integration.
 """
 from __future__ import annotations
 
-from typing import Any
 from synapse.schemas import (
     AnalysisPayload,
     ClassAnalytics,
     ConceptGraph,
     ConceptNode,
+    Diagnosis,
+    DiagnosisItem,
     GraphEdge,
+    MistakeClassification,
     TrendLabel,
 )
 
 
-def stub_calculate_mastery(student_id: str, concept_id: str) -> float:
-    return 0.75
+def sample_diagnosis(
+    student_id: str = "student_1",
+    concept_id: str = "concept_recursion",
+    mistakes: list[MistakeClassification] | None = None,
+) -> Diagnosis:
+    """Returns a deterministic Diagnosis instance with specified or default mistakes."""
+    if mistakes is None:
+        mistakes = [MistakeClassification.CARELESS_MISTAKE]
 
-
-def stub_calculate_trend() -> TrendLabel:
-    return TrendLabel.IMPROVING
-
-
-def stub_aggregate(concept_id: str, concept_name: str) -> ClassAnalytics:
-    return ClassAnalytics(
+    items = [
+        DiagnosisItem(
+            question_id=f"q_{i}",
+            classification=m,
+            reason=f"Mistake classified as {m.value}",
+        )
+        for i, m in enumerate(mistakes)
+    ]
+    return Diagnosis(
+        student_id=student_id,
         concept_id=concept_id,
-        concept_name=concept_name,
-        student_count=10,
-        average_mastery=0.72,
-        trend_distribution={
-            TrendLabel.IMPROVING: 6,
-            TrendLabel.STABLE: 3,
-            TrendLabel.STILL_WEAK: 1,
-            TrendLabel.DECLINING: 0,
-            TrendLabel.NEW: 0,
-        },
-        weak_students=["student_weak_01"],
+        items=items,
+        mastery_estimate=0.9,
+        trend=TrendLabel.STABLE,
     )
 
 
-def stub_concept_graph() -> ConceptGraph:
-    nodes = [
-        ConceptNode(id="c_cell", name="Cell Biology", summary="Basics of cell biology", prerequisites=[]),
-        ConceptNode(id="c_organelles", name="Organelles", summary="Chloroplasts and mitochondria", prerequisites=["c_cell"]),
-        ConceptNode(id="c_photo", name="Photosynthesis", summary="Energy conversion in plants", prerequisites=["c_organelles"]),
-    ]
+def sample_analysis_payload(
+    student_id: str = "student_1",
+    concept_id: str = "concept_recursion",
+    mastery: float = 0.85,
+    trend: TrendLabel = TrendLabel.IMPROVING,
+    cycle: int = 1,
+) -> AnalysisPayload:
+    """Returns a deterministic AnalysisPayload instance."""
+    return AnalysisPayload(
+        student_id=student_id,
+        concept_id=concept_id,
+        mastery_estimate=mastery,
+        trend=trend,
+        cycle_number=cycle,
+    )
+
+
+def sample_concept_graph() -> ConceptGraph:
+    """Returns a valid deterministic 3-node ConceptGraph DAG."""
+    c_func = ConceptNode(id="c_func", name="Functions", summary="Reusable functions", prerequisites=[])
+    c_rec = ConceptNode(id="c_rec", name="Recursion", summary="Recursive problem solving", prerequisites=["c_func"])
+    c_trees = ConceptNode(id="c_trees", name="Trees", summary="Hierarchical trees", prerequisites=["c_rec"])
+
     edges = [
-        GraphEdge(from_concept="c_cell", to_concept="c_organelles", relationship="prerequisite"),
-        GraphEdge(from_concept="c_organelles", to_concept="c_photo", relationship="prerequisite"),
+        GraphEdge(from_concept="c_func", to_concept="c_rec", relationship="prerequisite"),
+        GraphEdge(from_concept="c_rec", to_concept="c_trees", relationship="prerequisite"),
     ]
-    return ConceptGraph(nodes=nodes, edges=edges)
+    return ConceptGraph(nodes=[c_func, c_rec, c_trees], edges=edges)

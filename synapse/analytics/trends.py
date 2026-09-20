@@ -1,38 +1,36 @@
-"""
-Trend calculation across student learning cycles.
-Authoritative contract: Contracts.md Sections C.2, D.2.
-"""
+# synapse/analytics/trends.py
+"""Trend calculation across learning cycles for Synapse Cycle."""
 from __future__ import annotations
 
-from typing import Any
-from synapse.schemas import (
-    Diagnosis,
-    TrendLabel,
-)
+from synapse.schemas import TrendLabel
 
 
 def calculate_trend(
-    diagnoses: list[Diagnosis | dict[str, Any]],
+    current_mastery: float,
+    history: list[tuple[int, float]],
 ) -> TrendLabel:
-    """Determine learning trend from diagnosis trajectory."""
-    masteries: list[float] = []
-    for d in diagnoses:
-        m = d.mastery_estimate if isinstance(d, Diagnosis) else d.get("mastery_estimate")
-        if m is not None:
-            masteries.append(float(m))
+    """Calculates student progress trend comparing current mastery with cycle history.
 
-    if len(masteries) <= 1:
+    Rules:
+    - If history is empty: TrendLabel.NEW
+    - delta = current_mastery - previous_mastery (from the most recent cycle in history)
+    - If delta > 0.15: TrendLabel.IMPROVING
+    - Elif delta < -0.15: TrendLabel.DECLINING
+    - Elif current_mastery < 0.5: TrendLabel.STILL_WEAK
+    - Else: TrendLabel.STABLE
+    """
+    if not history:
         return TrendLabel.NEW
 
-    prev = masteries[-2]
-    latest = masteries[-1]
+    prev_mastery = history[-1][1]
+    # Round to avoid IEEE 754 floating point precision anomalies near exact boundaries
+    delta = round(current_mastery - prev_mastery, 6)
 
-    diff = latest - prev
-    if diff >= 0.08:
+    if delta > 0.15:
         return TrendLabel.IMPROVING
-    elif diff <= -0.08:
+    elif delta < -0.15:
         return TrendLabel.DECLINING
-    elif latest < 0.5:
+    elif current_mastery < 0.5:
         return TrendLabel.STILL_WEAK
     else:
         return TrendLabel.STABLE

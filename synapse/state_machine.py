@@ -34,14 +34,6 @@ class RunState(str, Enum):
     AGGREGATING = "aggregating"
     COMPLETE = "complete"
 
-    @property
-    def is_terminal(self) -> bool:
-        return self is RunState.COMPLETE
-
-    @property
-    def is_suspended(self) -> bool:
-        return self in PARKED_STATES
-
 
 # Valid forward transitions
 VALID_TRANSITIONS: dict[RunState, list[RunState]] = {
@@ -61,12 +53,9 @@ VALID_TRANSITIONS: dict[RunState, list[RunState]] = {
 
 # States that wait for an external event. The runner parks the run here; it resumes only when
 # slice.callback.answer() / sweep() or an API-triggered advance supplies the event.
-PARKED_STATES: frozenset[RunState] = frozenset({
-    RunState.TAG_CONFIRMATION,
-    RunState.AWAITING_STUDENT,
-})
+PARKED_STATES: frozenset[RunState] = frozenset({RunState.TAG_CONFIRMATION, RunState.AWAITING_STUDENT})
 
-TriggerType = Literal["code", "model", "human", "human_or_timeout"]
+TriggerType = Literal["code", "model", "human", "timeout", "human_or_timeout"]
 
 
 @dataclass(frozen=True)
@@ -132,4 +121,3 @@ def resolve_review_status(passed: bool, revisions_so_far: int) -> ReviewStatus:
 def state_after_review(status: ReviewStatus) -> RunState:
     """FAILED loops back to TAILORING; PASSED and REVISION_LIMIT_REACHED both go to NOTE_SAVED."""
     return RunState.TAILORING if status is ReviewStatus.FAILED else RunState.NOTE_SAVED
-

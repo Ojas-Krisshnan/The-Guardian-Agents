@@ -1,39 +1,40 @@
-"""
-Mastery calculation for student diagnoses.
-Authoritative contract: Contracts.md Sections C.2, D.2, D.4.
+# synapse/analytics/mastery.py
+"""Mastery calculation for Synapse Cycle.
+
+NOTE: This heuristic is a domain opinion / pedagogical scoring model,
+not an architectural constraint. Different pedagogical rules or weights
+can be configured here without changing the system architecture.
 """
 from __future__ import annotations
 
-from typing import Any
-from synapse.schemas import (
-    DEFAULT_MASTERY_ESTIMATE,
-    Diagnosis,
-)
+from synapse.schemas import Diagnosis, MistakeClassification
+
+# Domain opinion penalties per mistake classification
+MISTAKE_PENALTIES: dict[MistakeClassification, float] = {
+    MistakeClassification.CONCEPTUAL_GAP: 0.25,
+    MistakeClassification.CARELESS_MISTAKE: 0.10,
+    MistakeClassification.CONTRADICTORY: 0.15,
+    MistakeClassification.UNRELATED: 0.05,
+    MistakeClassification.EMPTY: 0.05,
+}
 
 
-def calculate_mastery(
-    diagnoses: list[Diagnosis | dict[str, Any]],
-    student_id: str,
-    concept_id: str,
-) -> float:
-    """Calculate current mastery estimate for a student on a concept from diagnosis history."""
-    matching: list[float] = []
-    for d in diagnoses:
-        sid = d.student_id if isinstance(d, Diagnosis) else d.get("student_id")
-        cid = d.concept_id if isinstance(d, Diagnosis) else d.get("concept_id")
-        if sid == student_id and cid == concept_id:
-            m = d.mastery_estimate if isinstance(d, Diagnosis) else d.get("mastery_estimate")
-            if m is not None:
-                matching.append(float(m))
+def calculate_mastery(diagnosis: Diagnosis) -> float:
+    """Calculates student mastery score in [0.0, 1.0] from a Diagnosis.
 
-    if not matching:
-        return DEFAULT_MASTERY_ESTIMATE
-
-    # Exponential recency weighting: 60% latest, 40% historical average if multiple
-    if len(matching) == 1:
-        return round(matching[0], 2)
-
-    latest = matching[-1]
-    older_avg = sum(matching[:-1]) / len(matching[:-1])
-    weighted = (latest * 0.7) + (older_avg * 0.3)
-    return round(max(0.0, min(1.0, weighted)), 2)
+    Heuristic (domain opinion):
+    - Start at base mastery 1.0 (perfect score assumption).
+    - Deduct 0.25 for each conceptual gap.
+    - Deduct 0.10 for each careless mistake.
+    - Deduct 0.15 for each contradictory answer.
+    - Deduct 0.05 for each unrelated response.
+    - Deduct 0.05 for each empty response.
+    - Clamp result to [0.0, 1.0].
+    """
+    total_penalty = sum(
+        MISTAKE_PENALTIES.get(item.classification, 0.0)
+        for item in diagnosis.items
+    )
+    raw_mastery = 1.0 - total_penalty
+    clamped = max(0.0, min(1.0, raw_mastery))
+    return round(clamped, 4)

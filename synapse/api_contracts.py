@@ -12,10 +12,10 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from synapse.schemas import (
-    AnalysisPayload,
     Attempt,
     ClassAnalytics,
     ConceptNode,
+    AnalysisPayload,
     Diagnosis,
     GraphEdge,
     NoteVersion,

@@ -1,27 +1,42 @@
 """
-Synapse curriculum domain package (Person 3).
-Authoritative contract: Contracts.md Sections A.5, C.2, D.2, D.5, D.8.
+synapse.curriculum
+
+PERSON 3 — Curriculum & Test Generation Engineer.
+
+Owns:
+1. Concept extraction from canonical notes (handle_teacher_setup, extract_concepts)
+2. Teacher tag confirmation via callback (handle_tag_confirmation, get_pending_tags, submit_teacher_confirmation)
+3. MCQ test generation from confirmed concepts (handle_test_ready)
+4. Tests/stubs/fixtures for these components
 """
-from synapse.curriculum.confirmation import (
-    process_tag_confirmation,
-    request_tag_confirmation,
-)
-from synapse.curriculum.extract import extract_concepts
-from synapse.curriculum.flow import (
+from .flow import (
+    extract_concepts,
+    generate_stable_concept_id,
+    generate_test,
+    get_pending_tags,
     handle_tag_confirmation,
     handle_teacher_setup,
     handle_test_ready,
-    ingest_corpus,
+    submit_teacher_confirmation,
 )
-from synapse.curriculum.test_generation import generate_test
+from .stub import (
+    BINARY_SEARCH_TEST_JSON,
+    DEFAULT_CONCEPTS_JSON,
+    DEFAULT_TEST_JSON,
+    CurriculumStub,
+)
 
 __all__ = [
-    "handle_teacher_setup",
-    "handle_tag_confirmation",
-    "handle_test_ready",
+    "BINARY_SEARCH_TEST_JSON",
+    "DEFAULT_CONCEPTS_JSON",
+    "DEFAULT_TEST_JSON",
+    "CurriculumStub",
     "extract_concepts",
+    "generate_stable_concept_id",
     "generate_test",
-    "request_tag_confirmation",
-    "process_tag_confirmation",
-    "ingest_corpus",
+    "get_pending_tags",
+    "handle_tag_confirmation",
+    "handle_teacher_setup",
+    "handle_test_ready",
+    "submit_teacher_confirmation",
 ]

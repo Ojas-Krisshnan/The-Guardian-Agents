@@ -7,3 +7,5 @@ fastapi>=0.115         # the expert callback form
 uvicorn>=0.30          # serves it
 # dev
 pytest>=8.0
+python-multipart
+PyJWT>=2.8

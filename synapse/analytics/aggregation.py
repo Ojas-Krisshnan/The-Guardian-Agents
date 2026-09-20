@@ -1,64 +1,66 @@
-"""
-Class-level aggregation across all student diagnoses.
-Authoritative contract: Contracts.md Sections C.2, D.2.
-"""
+# synapse/analytics/aggregation.py
+"""Aggregation pipeline: collects student AnalysisPayloads into ClassAnalytics."""
 from __future__ import annotations
 
-from typing import Any
+from collections import Counter
+
 from synapse.schemas import (
+    AnalysisPayload,
     ClassAnalytics,
-    Diagnosis,
     MASTERY_WEAK_THRESHOLD,
     TrendLabel,
 )
 
 
 def aggregate(
-    diagnoses: list[Diagnosis | dict[str, Any]],
-    concept_id: str,
-    concept_name: str,
+    payloads: list[AnalysisPayload],
+    concept_name: str = "",
 ) -> ClassAnalytics:
-    """Aggregate multi-student performance data for a concept."""
-    # Group latest diagnosis per student
-    student_latest: dict[str, Any] = {}
-    for d in diagnoses:
-        sid = d.student_id if isinstance(d, Diagnosis) else d.get("student_id")
-        cid = d.concept_id if isinstance(d, Diagnosis) else d.get("concept_id")
-        if sid and (not cid or cid == concept_id):
-            student_latest[sid] = d
+    """Aggregates student analysis payloads for a concept into ClassAnalytics.
 
-    if not student_latest:
+    Args:
+        payloads: List of AnalysisPayload records for student attempts on a concept.
+        concept_name: Optional human-readable concept name. If omitted, defaults
+            to concept_id (as AnalysisPayload only carries concept_id).
+
+    Returns:
+        ClassAnalytics with average mastery, trend distribution, student count,
+        and weak students list (< MASTERY_WEAK_THRESHOLD).
+    """
+    if not payloads:
         return ClassAnalytics(
-            concept_id=concept_id,
+            concept_id="",
             concept_name=concept_name,
             student_count=0,
             average_mastery=0.0,
-            trend_distribution={t: 0 for t in TrendLabel},
+            trend_distribution={},
             weak_students=[],
         )
 
-    student_count = len(student_latest)
-    mastery_sum = 0.0
-    trend_dist: dict[TrendLabel, int] = {t: 0 for t in TrendLabel}
-    weak_students: list[str] = []
+    concept_id = payloads[0].concept_id
+    resolved_name = concept_name or concept_id
+    student_count = len(payloads)
+    total_mastery = sum(p.mastery_estimate for p in payloads)
+    avg_mastery = round(total_mastery / student_count, 4)
 
-    for sid, d in student_latest.items():
-        m = float(d.mastery_estimate if isinstance(d, Diagnosis) else d.get("mastery_estimate", 0.0))
-        t_raw = d.trend if isinstance(d, Diagnosis) else d.get("trend", TrendLabel.NEW)
-        t = TrendLabel(t_raw) if isinstance(t_raw, str) else t_raw
+    # Compute distribution of trends across students
+    trend_counts = Counter(p.trend for p in payloads)
+    trend_distribution: dict[TrendLabel, int] = {
+        trend: count for trend, count in trend_counts.items()
+    }
 
-        mastery_sum += m
-        trend_dist[t] = trend_dist.get(t, 0) + 1
-        if m < MASTERY_WEAK_THRESHOLD:
-            weak_students.append(sid)
-
-    avg_mastery = round(mastery_sum / student_count, 2)
+    # Identify weak students using the architectural constant
+    weak_students = [
+        p.student_id
+        for p in payloads
+        if p.mastery_estimate < MASTERY_WEAK_THRESHOLD
+    ]
 
     return ClassAnalytics(
         concept_id=concept_id,
-        concept_name=concept_name,
+        concept_name=resolved_name,
         student_count=student_count,
         average_mastery=avg_mastery,
-        trend_distribution=trend_dist,
-        weak_students=sorted(weak_students),
+        trend_distribution=trend_distribution,
+        weak_students=weak_students,
     )

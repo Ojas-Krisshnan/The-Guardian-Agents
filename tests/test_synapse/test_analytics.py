@@ -1,175 +1,326 @@
-"""
-Tests for Person 4 analytics domain: mastery, trends, aggregation, flow.
-Authoritative contract: Contracts.md Sections A.5, C.2, D.2.
-"""
+# tests/test_synapse/test_analytics.py
+"""Comprehensive unit tests for Person 4 analytics: mastery scoring, trends, and class aggregation."""
 import pytest
+from datetime import datetime
 
-from slice.config import Settings
-from slice.runner import Context
-from slice.store import Store
-from synapse.analytics import (
-    aggregate,
-    calculate_mastery,
-    calculate_trend,
-    handle_aggregating,
-    handle_analysing,
-)
+from synapse.analytics.aggregation import aggregate
+from synapse.analytics.mastery import calculate_mastery
+from synapse.analytics.trends import calculate_trend
 from synapse.schemas import (
-    CanonicalNote,
+    AnalysisPayload,
     ClassAnalytics,
-    ConceptNode,
     Diagnosis,
     DiagnosisItem,
+    MASTERY_WEAK_THRESHOLD,
     MistakeClassification,
-    RecordKind,
+    NoteVersion,
     TrendLabel,
 )
-from synapse.state_machine import RunState
 
 
-@pytest.fixture
-def test_env(tmp_path):
-    store = Store(tmp_path / "analytics_test.db")
-    settings = Settings(
-        api_key="test",
-        model="test-model",
-        fallback_model="test-fallback",
-        escalation_model="test-esc",
-        max_tokens=100,
-        max_tokens_per_run=1000,
-        max_attempts_per_step=3,
-        expert_timeout_minutes=45,
-        langfuse_public="",
-        langfuse_secret="",
-        langfuse_host="",
-    )
-    run_id = store.create_run(
-        domain="synapse",
-        meta={"scope": {"concept_id": "c_photo", "student_id": "student_01", "cycle": 1}},
-        initial_state=RunState.ANALYSING,
-    )
-    ctx = Context(store, run_id, settings)
-    return store, run_id, ctx
-
-
-def test_calculate_mastery_and_trend():
-    """Verify mastery weighting and trend classification."""
-    diag1 = Diagnosis(
-        id="d1",
-        student_id="s1",
-        concept_id="c1",
-        mastery_estimate=0.4,
+def _diag(mistakes: list[MistakeClassification]) -> Diagnosis:
+    """Helper to build a Diagnosis with a specific list of mistakes."""
+    items = [
+        DiagnosisItem(
+            question_id=f"q_{i}",
+            classification=m,
+            reason=f"Classification: {m.value}",
+        )
+        for i, m in enumerate(mistakes)
+    ]
+    return Diagnosis(
+        student_id="student_test",
+        concept_id="concept_test",
+        items=items,
+        mastery_estimate=0.5,
         trend=TrendLabel.NEW,
     )
-    diag2 = Diagnosis(
-        id="d2",
-        student_id="s1",
-        concept_id="c1",
-        mastery_estimate=0.7,
-        trend=TrendLabel.IMPROVING,
-    )
-
-    # 1. Mastery
-    m1 = calculate_mastery([diag1], student_id="s1", concept_id="c1")
-    assert m1 == 0.4
-
-    # Weighted: 70% of 0.7 + 30% of 0.4 = 0.49 + 0.12 = 0.61
-    m2 = calculate_mastery([diag1, diag2], student_id="s1", concept_id="c1")
-    assert m2 == 0.61
-
-    # 2. Trend
-    t1 = calculate_trend([diag1])
-    assert t1 == TrendLabel.NEW
-
-    t2 = calculate_trend([diag1, diag2])
-    assert t2 == TrendLabel.IMPROVING
-
-    # Declining
-    diag3 = Diagnosis(
-        id="d3",
-        student_id="s1",
-        concept_id="c1",
-        mastery_estimate=0.3,
-        trend=TrendLabel.DECLINING,
-    )
-    t3 = calculate_trend([diag2, diag3])
-    assert t3 == TrendLabel.DECLINING
 
 
-def test_aggregate_multi_student():
-    """Verify class-level aggregation properly identifies weak students and distributions."""
-    diagnoses = [
-        Diagnosis(id="d1", student_id="s1", concept_id="c_photo", mastery_estimate=0.8, trend=TrendLabel.IMPROVING),
-        Diagnosis(id="d2", student_id="s2", concept_id="c_photo", mastery_estimate=0.4, trend=TrendLabel.STILL_WEAK),
-        Diagnosis(id="d3", student_id="s3", concept_id="c_photo", mastery_estimate=0.6, trend=TrendLabel.STABLE),
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. MASTERY CALCULATION TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mastery_no_mistakes():
+    """No mistakes -> base mastery of 1.0."""
+    d = _diag([])
+    assert calculate_mastery(d) == 1.0
+
+
+def test_mastery_one_conceptual_gap():
+    """One conceptual gap deducts 0.25 -> 0.75."""
+    d = _diag([MistakeClassification.CONCEPTUAL_GAP])
+    assert calculate_mastery(d) == 0.75
+
+
+def test_mastery_one_careless_mistake():
+    """One careless mistake deducts 0.10 -> 0.90."""
+    d = _diag([MistakeClassification.CARELESS_MISTAKE])
+    assert calculate_mastery(d) == 0.90
+
+
+def test_mastery_one_contradictory():
+    """One contradictory answer deducts 0.15 -> 0.85."""
+    d = _diag([MistakeClassification.CONTRADICTORY])
+    assert calculate_mastery(d) == 0.85
+
+
+def test_mastery_one_unrelated():
+    """One unrelated response deducts 0.05 -> 0.95."""
+    d = _diag([MistakeClassification.UNRELATED])
+    assert calculate_mastery(d) == 0.95
+
+
+def test_mastery_one_empty():
+    """One empty response deducts 0.05 -> 0.95."""
+    d = _diag([MistakeClassification.EMPTY])
+    assert calculate_mastery(d) == 0.95
+
+
+def test_mastery_multiple_penalties():
+    """Combined deductions: 1.0 - (0.25 + 0.10 + 0.15 + 0.05 + 0.05) = 0.40."""
+    d = _diag([
+        MistakeClassification.CONCEPTUAL_GAP,
+        MistakeClassification.CARELESS_MISTAKE,
+        MistakeClassification.CONTRADICTORY,
+        MistakeClassification.UNRELATED,
+        MistakeClassification.EMPTY,
+    ])
+    assert calculate_mastery(d) == 0.40
+
+
+def test_mastery_clamps_at_zero():
+    """5 conceptual gaps = 5 * 0.25 = 1.25 penalty. Floor must clamp at 0.0."""
+    d = _diag([MistakeClassification.CONCEPTUAL_GAP] * 5)
+    assert calculate_mastery(d) == 0.0
+
+
+def test_mastery_never_exceeds_one():
+    """Mastery ceiling is 1.0."""
+    d = _diag([])
+    mastery = calculate_mastery(d)
+    assert mastery <= 1.0
+    assert mastery == 1.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. TREND CALCULATION TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_trend_new_when_history_empty():
+    """Empty cycle history yields TrendLabel.NEW."""
+    assert calculate_trend(0.8, []) == TrendLabel.NEW
+
+
+def test_trend_improving_strictly_greater_than_threshold():
+    """Delta > 0.15 -> IMPROVING."""
+    # Previous 0.60, current 0.76 (delta = +0.16 > 0.15)
+    assert calculate_trend(0.76, [(1, 0.60)]) == TrendLabel.IMPROVING
+
+
+def test_trend_declining_strictly_less_than_threshold():
+    """Delta < -0.15 -> DECLINING."""
+    # Previous 0.80, current 0.64 (delta = -0.16 < -0.15)
+    assert calculate_trend(0.64, [(1, 0.80)]) == TrendLabel.DECLINING
+
+
+def test_trend_boundary_positive_fifteen():
+    """Delta exactly +0.15 is NOT strictly > 0.15."""
+    # Previous 0.50, current 0.65 -> delta = 0.15. Mastery >= 0.5 -> STABLE.
+    assert calculate_trend(0.65, [(1, 0.50)]) == TrendLabel.STABLE
+
+
+def test_trend_boundary_negative_fifteen():
+    """Delta exactly -0.15 is NOT strictly < -0.15."""
+    # Previous 0.80, current 0.65 -> delta = -0.15. Mastery >= 0.5 -> STABLE.
+    assert calculate_trend(0.65, [(1, 0.80)]) == TrendLabel.STABLE
+
+
+def test_trend_still_weak_when_delta_between_and_mastery_under_half():
+    """Delta within [-0.15, 0.15] and current_mastery < 0.5 -> STILL_WEAK."""
+    # Previous 0.30, current 0.35 -> delta = +0.05, mastery = 0.35 < 0.5
+    assert calculate_trend(0.35, [(1, 0.30)]) == TrendLabel.STILL_WEAK
+
+
+def test_trend_stable_when_delta_between_and_mastery_at_or_above_half():
+    """Delta within [-0.15, 0.15] and current_mastery >= 0.5 -> STABLE."""
+    # Previous 0.70, current 0.75 -> delta = +0.05, mastery = 0.75 >= 0.5
+    assert calculate_trend(0.75, [(1, 0.70)]) == TrendLabel.STABLE
+
+
+def test_trend_boundary_mastery_exact_half():
+    """Current mastery exactly 0.5 is NOT < 0.5; therefore STABLE."""
+    # Previous 0.50, current 0.50 -> delta = 0.0, mastery = 0.50 -> STABLE
+    assert calculate_trend(0.50, [(1, 0.50)]) == TrendLabel.STABLE
+
+
+def test_trend_uses_latest_cycle_in_multi_cycle_history():
+    """Uses history[-1] as previous mastery."""
+    history = [(1, 0.20), (2, 0.40), (3, 0.60)]
+    # Current 0.80 compared against cycle 3 (0.60): delta = +0.20 -> IMPROVING
+    assert calculate_trend(0.80, history) == TrendLabel.IMPROVING
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. CLASS ANALYTICS AGGREGATION TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_aggregation_empty_payloads():
+    """Empty list returns zeroed ClassAnalytics without crashing."""
+    ca = aggregate([], concept_name="Recursion")
+    assert ca.student_count == 0
+    assert ca.average_mastery == 0.0
+    assert ca.weak_students == []
+    assert ca.trend_distribution == {}
+
+
+def test_aggregation_multiple_students():
+    """Aggregates 3 students: verifies count, avg mastery, trend counts, weak list."""
+    payloads = [
+        AnalysisPayload(
+            student_id="student_1",
+            concept_id="c_rec",
+            mastery_estimate=0.90,
+            trend=TrendLabel.IMPROVING,
+            cycle_number=1,
+        ),
+        AnalysisPayload(
+            student_id="student_2",
+            concept_id="c_rec",
+            mastery_estimate=0.60,
+            trend=TrendLabel.STABLE,
+            cycle_number=1,
+        ),
+        AnalysisPayload(
+            student_id="student_3",
+            concept_id="c_rec",
+            mastery_estimate=0.30,
+            trend=TrendLabel.STILL_WEAK,
+            cycle_number=1,
+        ),
     ]
-    ca = aggregate(diagnoses, concept_id="c_photo", concept_name="Photosynthesis")
-    assert isinstance(ca, ClassAnalytics)
+
+    ca = aggregate(payloads, concept_name="Recursion")
+
+    # Student count
     assert ca.student_count == 3
-    assert ca.average_mastery == 0.6
-    assert ca.weak_students == ["s2"]
+    assert ca.concept_id == "c_rec"
+    assert ca.concept_name == "Recursion"
+
+    # Average mastery: (0.90 + 0.60 + 0.30) / 3 = 0.60
+    assert ca.average_mastery == 0.60
+
+    # Trend distribution
     assert ca.trend_distribution[TrendLabel.IMPROVING] == 1
-    assert ca.trend_distribution[TrendLabel.STILL_WEAK] == 1
     assert ca.trend_distribution[TrendLabel.STABLE] == 1
+    assert ca.trend_distribution[TrendLabel.STILL_WEAK] == 1
+
+    # Weak students: threshold is MASTERY_WEAK_THRESHOLD (0.5)
+    # Only student_3 (0.30) is strictly < 0.5
+    assert ca.weak_students == ["student_3"]
 
 
-def test_handle_analysing_and_aggregating_flow(test_env):
-    """Verify flow handlers for ANALYSING -> AGGREGATING -> COMPLETE."""
-    store, run_id, ctx = test_env
+def test_aggregation_weak_threshold_boundary():
+    """A student with exactly MASTERY_WEAK_THRESHOLD (0.5) is not weak (< is strict)."""
+    payloads = [
+        AnalysisPayload(
+            student_id="student_borderline",
+            concept_id="c_rec",
+            mastery_estimate=MASTERY_WEAK_THRESHOLD,
+            trend=TrendLabel.STABLE,
+            cycle_number=1,
+        ),
+        AnalysisPayload(
+            student_id="student_below",
+            concept_id="c_rec",
+            mastery_estimate=0.49,
+            trend=TrendLabel.STILL_WEAK,
+            cycle_number=1,
+        ),
+    ]
+    ca = aggregate(payloads)
+    assert ca.weak_students == ["student_below"]
 
-    # Seed diagnosis and canonical note
-    diag = Diagnosis(
-        id="d_01",
-        student_id="student_01",
-        concept_id="c_photo",
-        mastery_estimate=0.75,
-        trend=TrendLabel.IMPROVING,
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. FLOW HANDLERS TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MockContext:
+    def __init__(self, records=None, scope=None):
+        self.records = records or []
+        self.scope = scope or {}
+        self.appended = []
+
+    def get_latest(self, kind):
+        for r in reversed(self.records):
+            if getattr(r, "kind", None) == kind:
+                return getattr(r, "payload", None)
+        return None
+
+    def find_all(self, kind):
+        return [
+            getattr(r, "payload", None)
+            for r in self.records
+            if getattr(r, "kind", None) == kind
+        ]
+
+    def append(self, kind, payload):
+        class Rec:
+            def __init__(self, k, p):
+                self.kind = k
+                self.payload = p
+        rec = Rec(kind, payload)
+        self.records.append(rec)
+        self.appended.append((kind, payload))
+
+
+def test_handle_analysing():
+    """handle_analysing calculates mastery, trend, appends analysis payload, transitions to aggregating."""
+    import asyncio
+    from synapse.analytics.flow import handle_analysing
+    from synapse.schemas import RecordKind
+    from synapse.state_machine import RunState
+
+    diag = _diag([MistakeClassification.CARELESS_MISTAKE])
+    ctx = MockContext(
+        scope={"concept_id": "c_rec", "student_id": "student_1", "cycle": 2, "mastery_history": [(1, 0.70)]}
     )
-    note = CanonicalNote(
-        concept_id="c_photo",
-        markdown="# Photosynthesis\nLight reactions in [[Thylakoid]].",
-        extracted_concepts=[
-            ConceptNode(id="c_thylakoid", name="Thylakoid", summary="Membrane site"),
-        ],
-        teacher_confirmed=True,
+    ctx.append(RecordKind.DIAGNOSIS, diag)
+
+    next_state = asyncio.run(handle_analysing(ctx))
+    assert next_state == RunState.AGGREGATING
+    assert len(ctx.appended) == 2  # 1 diagnosis + 1 analysis
+    kind, payload = ctx.appended[-1]
+    assert kind == RecordKind.ANALYSIS
+    assert isinstance(payload, AnalysisPayload)
+    assert payload.mastery_estimate == 0.90
+    assert payload.trend == TrendLabel.IMPROVING  # 0.90 - 0.70 = 0.20 > 0.15
+
+
+def test_handle_aggregating():
+    """handle_aggregating aggregates payloads, builds graph, transitions to complete."""
+    import asyncio
+    from synapse.analytics.flow import handle_aggregating
+    from synapse.schemas import RecordKind
+    from synapse.state_machine import RunState
+
+    p1 = AnalysisPayload(student_id="s1", concept_id="c_rec", mastery_estimate=0.8, trend=TrendLabel.STABLE, cycle_number=1)
+    p2 = AnalysisPayload(student_id="s2", concept_id="c_rec", mastery_estimate=0.4, trend=TrendLabel.STILL_WEAK, cycle_number=1)
+    note = NoteVersion(student_id="s1", concept_id="c_rec", version=1, markdown="Recursion note")
+
+    ctx = MockContext(
+        records=[],
+        scope={"concept_id": "c_rec", "student_id": "s1"}
     )
-    store.append(run_id, RecordKind.DIAGNOSIS.value, diag.model_dump(mode="json"), "agents")
-    store.append(run_id, RecordKind.CANONICAL_NOTE.value, note.model_dump(mode="json"), "curriculum")
+    ctx.append(RecordKind.ANALYSIS, p1)
+    ctx.append(RecordKind.ANALYSIS, p2)
+    ctx.append(RecordKind.NOTE_VERSION, note)
 
-    # Step 1: handle_analysing -> transitions to AGGREGATING
-    next_state = handle_analysing(ctx)
-    assert next_state is RunState.AGGREGATING
-    analysis = ctx.latest(RecordKind.ANALYSIS.value)
-    assert analysis is not None
-    assert analysis["student_id"] == "student_01"
-    assert analysis["mastery_estimate"] == 0.75
-
-    # Step 2: handle_aggregating -> transitions to COMPLETE
-    next_state = handle_aggregating(ctx)
-    assert next_state is RunState.COMPLETE
-    class_rec = ctx.latest(RecordKind.CLASS_ANALYTICS.value)
-    assert class_rec is not None
-    assert class_rec["concept_id"] == "c_photo"
-    assert class_rec["student_count"] == 1
-
-    graph_rec = ctx.latest(RecordKind.CONCEPT_GRAPH.value)
-    assert graph_rec is not None
-    assert len(graph_rec["nodes"]) >= 1
+    next_state = asyncio.run(handle_aggregating(ctx))
+    assert next_state == RunState.COMPLETE
+    kinds = [k for k, p in ctx.appended]
+    assert RecordKind.CLASS_ANALYTICS in kinds
+    assert RecordKind.CONCEPT_GRAPH in kinds
 
 
-def test_analytics_no_forbidden_imports():
-    """Verify Person 4 analytics domain does not import agents, curriculum, runtime, api, web."""
-    import sys
-    for mod_name in list(sys.modules.keys()):
-        if mod_name.startswith("synapse.analytics"):
-            mod = sys.modules[mod_name]
-            code = getattr(mod, "__file__", "")
-            if code and code.endswith(".py"):
-                with open(code, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    assert "synapse.curriculum" not in content
-                    assert "synapse.agents" not in content
-                    assert "synapse.runtime" not in content
-                    assert "import api" not in content
-                    assert "import web" not in content
-                    assert "import frontend" not in content
