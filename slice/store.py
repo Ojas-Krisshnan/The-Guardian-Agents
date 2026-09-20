@@ -398,17 +398,17 @@ class Store:
         """Fetch user by username or email. Never returns password_hash."""
         norm = username.lower().strip()
         row = self.db.execute(
-            "SELECT id, role, username, email, name, created_at FROM users WHERE username = ? OR email = ?",
+            "SELECT id, role, username, email, name, created_at FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE",
             (norm, norm),
         ).fetchone()
         return dict(row) if row else None
 
     def authenticate_user(self, username_or_email: str, password: str) -> dict[str, Any] | None:
         """Authenticate user against SQLite password_hash using constant-time PBKDF2 comparison."""
-        from synapse.database import verify_password
+        from synapse.database import verify_password, hash_password
         norm = username_or_email.lower().strip()
         row = self.db.execute(
-            "SELECT id, role, username, email, password_hash, name FROM users WHERE username = ? OR email = ?",
+            "SELECT id, role, username, email, password_hash, name FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE",
             (norm, norm),
         ).fetchone()
         if not row:
@@ -417,6 +417,15 @@ class Store:
             return None
         if not verify_password(row["password_hash"], password):
             return None
+
+        # Transparently upgrade legacy 2-part hash to modern 3-part PBKDF2 hash
+        if row["password_hash"] and row["password_hash"].count("$") == 1:
+            try:
+                upgraded = hash_password(password)
+                self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (upgraded, row["id"]))
+            except Exception:
+                pass
+
         return {
             "id": row["id"],
             "role": row["role"],

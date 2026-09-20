@@ -157,18 +157,62 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(stored_hash: str, password_to_check: str) -> bool:
-    """Verify password against stored PBKDF2-HMAC-SHA256 hash using constant-time comparison."""
+    """Verify password against stored PBKDF2-HMAC-SHA256 hash using constant-time comparison.
+    
+    Compatible with:
+    - Current 3-part format: pbkdf2:sha256:100000$<salt_hex>$<hash_hex>
+    - Legacy 2-part format: <salt_hex>$<hash_hex>
+    """
     if not stored_hash or not password_to_check:
         return False
     try:
         parts = stored_hash.split("$")
-        if len(parts) != 3:
+        pw_bytes = password_to_check.encode("utf-8")
+
+        if len(parts) == 3:
+            algo_part, salt_hex, hash_hex = parts
+            iters = 100_000
+            if ":" in algo_part:
+                subparts = algo_part.split(":")
+                if len(subparts) >= 3 and subparts[2].isdigit():
+                    iters = int(subparts[2])
+
+            expected_hash = bytes.fromhex(hash_hex)
+
+            # 1. Standard raw-bytes salt
+            try:
+                salt_bytes = bytes.fromhex(salt_hex)
+                actual_hash = hashlib.pbkdf2_hmac("sha256", pw_bytes, salt_bytes, iters)
+                if secrets.compare_digest(expected_hash, actual_hash):
+                    return True
+            except ValueError:
+                pass
+
+            # 2. String-encoded salt fallback
+            actual_hash2 = hashlib.pbkdf2_hmac("sha256", pw_bytes, salt_hex.encode("utf-8"), iters)
+            return secrets.compare_digest(expected_hash, actual_hash2)
+
+        elif len(parts) == 2:
+            salt_str, hash_hex = parts
+            expected_hex = hash_hex.lower().strip()
+
+            # 1. Legacy format: salt was a 32-char hex string encoded as utf-8 bytes
+            actual_hex = hashlib.pbkdf2_hmac("sha256", pw_bytes, salt_str.encode("utf-8"), 100_000).hex()
+            if secrets.compare_digest(expected_hex, actual_hex):
+                return True
+
+            # 2. Legacy format with raw-bytes salt
+            try:
+                salt_bytes = bytes.fromhex(salt_str)
+                actual_hex2 = hashlib.pbkdf2_hmac("sha256", pw_bytes, salt_bytes, 100_000).hex()
+                if secrets.compare_digest(expected_hex, actual_hex2):
+                    return True
+            except ValueError:
+                pass
+
             return False
-        algo_part, salt_hex, hash_hex = parts
-        salt = bytes.fromhex(salt_hex)
-        expected_hash = bytes.fromhex(hash_hex)
-        actual_hash = hashlib.pbkdf2_hmac("sha256", password_to_check.encode("utf-8"), salt, 100_000)
-        return secrets.compare_digest(expected_hash, actual_hash)
+
+        return False
     except Exception:
         return False
 
@@ -211,7 +255,8 @@ def get_user_by_id(db: sqlite3.Connection, user_id: str) -> Optional[dict[str, A
 
 
 def get_user_by_username(db: sqlite3.Connection, username: str) -> Optional[dict[str, Any]]:
-    row = db.execute("SELECT * FROM users WHERE username = ?", (username.lower().strip(),)).fetchone()
+    norm = username.lower().strip()
+    row = db.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE", (norm, norm)).fetchone()
     return dict(row) if row else None
 
 

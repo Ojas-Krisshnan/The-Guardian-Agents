@@ -91,6 +91,6 @@ def settings(reload: bool = True) -> Settings:
         nim_fallback_model    = g("NIM_FALLBACK_MODEL", "nvidia/nemotron-3-ultra").strip() or None,
         synapse_jwt_secret    = g("SYNAPSE_JWT_SECRET", "dev-secret-change-in-prod").strip(),
         tag_confirmation_timeout_seconds = int(g("SYNAPSE_TAG_TIMEOUT_SECONDS", "600")),
-        database_path         = g("SYNAPSE_DB_PATH", "synapse.db").strip(),
+        database_path         = g("SYNAPSE_DB_PATH", str(Path(__file__).resolve().parent.parent / "synapse.db")).strip(),
         slice_db_path         = g("SLICE_DB", "run.db").strip(),
     )
