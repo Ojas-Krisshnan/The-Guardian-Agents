@@ -83,38 +83,84 @@ BEGIN SELECT RAISE(ABORT, 'versions is append-only: history is not editable'); E
 class Store:
     """Durable run state. One file. Commit it, ship it, replay it."""
 
-    def __init__(self, path: str | Path = "run.db") -> None:
-        self.path = str(path)
-        self.db = sqlite3.connect(self.path, isolation_level=None)
+    def __init__(self, path: str | Path | None = None) -> None:
+        if path is None:
+            try:
+                from slice.config import settings
+                self.path = str(Path(settings().database_path).resolve())
+            except Exception:
+                self.path = "run.db"
+        else:
+            self.path = str(path)
+        self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        self._init_domain_tables()
 
     # ---------------------------------------------------------------- runs
 
-    def create_run(self, domain: str, meta: dict[str, Any] | None = None,
-                   initial_state: Any = RunState.DRAFTING) -> str:
-        run_id, now, s_val = new_id("run"), time.time(), getattr(initial_state, "value", str(initial_state))
-        self.db.execute("INSERT INTO runs(id, domain, state, created_at, updated_at, meta_json) VALUES (?,?,?,?,?,?)",
-                        (run_id, domain, s_val, now, now, json.dumps(meta or {})))
+    def create_run(self, domain: str, meta: dict[str, Any] | None = None) -> str:
+        run_id, now = new_id("run"), time.time()
+        self.db.execute(
+            "INSERT INTO runs(id, domain, state, created_at, updated_at, meta_json)"
+            " VALUES (?,?,?,?,?,?)",
+            (run_id, domain, RunState.DRAFTING.value, now, now, json.dumps(meta or {})),
+        )
         return run_id
 
-    def get_state(self, run_id: str, state_type: Any | None = None) -> Any:
+    def get_state(self, run_id: str) -> Any:
         row = self.db.execute("SELECT state FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(f"no such run: {run_id}")
-        raw = row["state"]
-        if state_type is not None:
-            return state_type(raw)
+        val = row["state"]
         try:
-            return RunState(raw)
+            return RunState(val)
         except ValueError:
-            return raw
+            try:
+                from synapse.state_machine import RunState as SynapseRunState
+                base_state = SynapseRunState(val)
+                has_open_q = bool(self.open_questions(run_id))
+                has_attempt = bool(self.latest(run_id, "attempt"))
+
+                class StateProxy:
+                    def __init__(self, s):
+                        self._s = s
+                    @property
+                    def value(self):
+                        return self._s.value
+                    @property
+                    def is_terminal(self):
+                        return self._s is SynapseRunState.COMPLETE
+                    @property
+                    def is_suspended(self):
+                        if self._s is SynapseRunState.TAG_CONFIRMATION:
+                            return has_open_q
+                        if self._s is SynapseRunState.AWAITING_STUDENT:
+                            return not has_attempt
+                        return False
+                    def __eq__(self, other):
+                        if hasattr(other, "value"):
+                            return self.value == other.value
+                        return self.value == other or self._s == other
+                    def __hash__(self):
+                        return hash(self._s)
+                    def __str__(self):
+                        return str(self.value)
+                    def __repr__(self):
+                        return repr(self._s)
+
+                return StateProxy(base_state)
+            except Exception:
+                return val
 
     def set_state(self, run_id: str, state: Any) -> None:
-        val = getattr(state, "value", str(state))
-        self.db.execute("UPDATE runs SET state=?, updated_at=? WHERE id=?", (val, time.time(), run_id))
+        val = state.value if hasattr(state, "value") else str(state)
+        self.db.execute(
+            "UPDATE runs SET state=?, updated_at=? WHERE id=?",
+            (val, time.time(), run_id),
+        )
 
     def meta(self, run_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT meta_json FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -124,7 +170,8 @@ class Store:
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT id, domain, state, created_at, updated_at FROM runs ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, domain, state, created_at, updated_at FROM runs"
+            " ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -220,11 +267,261 @@ class Store:
             args = (run_id,)
         return [_to_question(r) for r in self.db.execute(sql + " ORDER BY asked_at", args)]
 
-    def update_meta(self, run_id: str, updates: dict[str, Any]) -> None:
-        current = self.meta(run_id)
-        current.update(updates)
-        self.db.execute("UPDATE runs SET meta_json=?, updated_at=? WHERE id=?",
-                        (json.dumps(current), time.time(), run_id))
+    # -------------------------------------------------------- typed records
+
+    def save_run_record(self, record: Any) -> None:
+        """Persist a RunRecord to the store."""
+        from .records import RunRecord
+        if isinstance(record, RunRecord):
+            data = record.model_dump(mode="json")
+        elif isinstance(record, dict):
+            data = record
+        else:
+            raise TypeError("record must be a RunRecord or dict")
+        run_id = data.get("run_id")
+        flow = data.get("flow", "default")
+        state = data.get("state", "drafting")
+        now = time.time()
+        c_at = data.get("created_at")
+        created_at = c_at if isinstance(c_at, (int, float)) else now
+        row = self.db.execute("SELECT id FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            self.db.execute(
+                "INSERT INTO runs(id, domain, state, created_at, updated_at, meta_json)"
+                " VALUES (?,?,?,?,?,?)",
+                (run_id, flow, state, created_at, now, json.dumps(data)),
+            )
+        else:
+            self.db.execute(
+                "UPDATE runs SET domain=?, state=?, updated_at=?, meta_json=? WHERE id=?",
+                (flow, state, now, json.dumps(data), run_id),
+            )
+
+    def get_run_record(self, run_id: str) -> Any:
+        """Retrieve a persisted RunRecord."""
+        from .records import RunRecord
+        row = self.db.execute("SELECT meta_json FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        meta = json.loads(row["meta_json"])
+        try:
+            return RunRecord.model_validate(meta)
+        except Exception:
+            return meta
+
+    def save_step_record(self, record: Any) -> int:
+        """Append an immutable StepRecord into versions history."""
+        from .records import StepRecord
+        if isinstance(record, StepRecord):
+            data = record.model_dump(mode="json")
+            step_name = record.step_name
+            run_id = record.run_id
+        elif isinstance(record, dict):
+            data = record
+            step_name = data.get("step_name", "step")
+            run_id = data.get("run_id", "")
+        else:
+            raise TypeError("record must be a StepRecord or dict")
+        return self.append(run_id, "step_record", data, produced_by=step_name)
+
+    def get_step_records(self, run_id: str) -> list[Any]:
+        """Retrieve all immutable StepRecords for a run, oldest first."""
+        from .records import StepRecord
+        versions = self.history(run_id, "step_record")
+        records = []
+        for v in versions:
+            try:
+                records.append(StepRecord.model_validate(v.payload))
+            except Exception:
+                records.append(v.payload)
+        return records
+
+    # ---------------------------------------------------------------- users & auth
+
+    def create_user(
+        self,
+        role: str,
+        username: str,
+        password: str | None,
+        name: str,
+        email: str = "",
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create and persist a user account with hashed password in SQLite.
+        
+        Raw passwords and password hashes are never returned.
+        """
+        import secrets
+        from synapse.database import hash_password
+
+        clean_role = role.lower().strip()
+        if clean_role not in ("teacher", "student"):
+            raise ValueError(f"Invalid user role: {role}")
+
+        clean_user = username.lower().strip()
+        clean_email = email.strip().lower() if email else ""
+        clean_name = name.strip()
+        if not clean_name:
+            clean_name = clean_user
+
+        prefix = "tea" if clean_role == "teacher" else "stu"
+        uid = user_id or f"{prefix}_{secrets.token_hex(6)}"
+        pw_hash = hash_password(password) if password else ""
+        now = time.time()
+
+        self.db.execute(
+            "INSERT INTO users (id, role, username, email, password_hash, name, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (uid, clean_role, clean_user, clean_email, pw_hash, clean_name, now),
+        )
+
+        # If direct student registration, also create a student_credentials record so STU- ID login works
+        if clean_role == "student":
+            login_id = clean_user.upper() if clean_user.upper().startswith("STU-") else f"STU-{secrets.token_hex(3).upper()}"
+            self.db.execute(
+                "INSERT OR IGNORE INTO student_credentials (student_id, login_id, is_active, created_at) "
+                "VALUES (?, ?, 1, ?)",
+                (uid, login_id, now),
+            )
+
+        return {
+            "id": uid,
+            "role": clean_role,
+            "username": clean_user,
+            "email": clean_email,
+            "name": clean_name,
+            "created_at": now,
+        }
+
+    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        """Fetch user by ID. Never returns password_hash."""
+        row = self.db.execute(
+            "SELECT u.id, u.role, u.username, u.email, u.name, u.created_at, sc.login_id "
+            "FROM users u "
+            "LEFT JOIN student_credentials sc ON sc.student_id = u.id "
+            "WHERE u.id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        """Fetch user by username, email, ID, or student login ID. Never returns password_hash."""
+        raw = username.strip()
+        norm = raw.lower()
+        stu_prefix = f"STU-{raw.upper()}"
+        row = self.db.execute(
+            "SELECT u.id, u.role, u.username, u.email, u.name, u.created_at, sc.login_id "
+            "FROM users u "
+            "LEFT JOIN student_credentials sc ON sc.student_id = u.id "
+            "WHERE u.username = ? COLLATE NOCASE "
+            "   OR u.email = ? COLLATE NOCASE "
+            "   OR u.id = ? COLLATE NOCASE "
+            "   OR sc.login_id = ? COLLATE NOCASE "
+            "   OR sc.login_id = ? COLLATE NOCASE",
+            (norm, norm, raw, raw, stu_prefix),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def authenticate_user(self, username_or_email: str, password: str) -> dict[str, Any] | None:
+        """Authenticate user against SQLite password_hash using constant-time verification.
+        
+        Supports lookup by username, email, user ID, and student login ID.
+        Transparently upgrades valid legacy hashes to modern PBKDF2.
+        """
+        from synapse.database import verify_password, hash_password
+        raw = username_or_email.strip()
+        norm = raw.lower()
+        stu_prefix = f"STU-{raw.upper()}"
+        row = self.db.execute(
+            "SELECT u.id, u.role, u.username, u.email, u.password_hash, u.name, sc.login_id "
+            "FROM users u "
+            "LEFT JOIN student_credentials sc ON sc.student_id = u.id "
+            "WHERE u.username = ? COLLATE NOCASE "
+            "   OR u.email = ? COLLATE NOCASE "
+            "   OR u.id = ? COLLATE NOCASE "
+            "   OR sc.login_id = ? COLLATE NOCASE "
+            "   OR sc.login_id = ? COLLATE NOCASE",
+            (norm, norm, raw, raw, stu_prefix),
+        ).fetchone()
+        if not row:
+            return None
+        if not row["password_hash"]:
+            return None
+        if not verify_password(row["password_hash"], password):
+            return None
+
+        # Transparently upgrade legacy/non-standard hashes to modern 3-part PBKDF2 hash upon successful verification
+        stored_hash = row["password_hash"]
+        if not stored_hash.startswith("pbkdf2:sha256:100000$"):
+            try:
+                upgraded = hash_password(password)
+                self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (upgraded, row["id"]))
+            except Exception:
+                pass
+
+        return {
+            "id": row["id"],
+            "role": row["role"].lower().strip(),
+            "username": row["username"],
+            "email": row["email"],
+            "name": row["name"],
+            "login_id": row["login_id"],
+        }
+
+    def authenticate_student_id(self, login_id: str) -> dict[str, Any] | None:
+        """Authenticate student via generated login ID (e.g. STU-XXXXXX). Activates credential in SQLite."""
+        from synapse.database import authenticate_student
+        return authenticate_student(self.db, login_id)
+
+    # ---------------------------------------------------------------- teacher-student connections
+
+    def get_or_create_teacher_code(self, teacher_id: str) -> str:
+        """Get or generate persistent 6-char connection code for teacher."""
+        from synapse.database import get_or_create_teacher_code
+        return get_or_create_teacher_code(self.db, teacher_id)
+
+    def connect_student_to_teacher(self, student_id: str, code: str) -> dict[str, Any]:
+        """Connect student to teacher via code."""
+        from synapse.database import connect_student_to_teacher
+        return connect_student_to_teacher(self.db, student_id, code)
+
+    def is_student_connected_to_teacher(self, teacher_id: str, student_id: str) -> bool:
+        """Verify teacher-student relationship."""
+        from synapse.database import is_student_connected_to_teacher
+        return is_student_connected_to_teacher(self.db, teacher_id, student_id)
+
+    def list_teacher_connected_students(self, teacher_id: str) -> list[dict[str, Any]]:
+        """List students connected to teacher with live performance summaries."""
+        from synapse.database import list_teacher_connected_students
+        return list_teacher_connected_students(self.db, teacher_id)
+
+    def get_connected_student_performance(self, teacher_id: str, student_id: str) -> dict[str, Any] | None:
+        """Get student's detailed performance analytics, verifying teacher authorization."""
+        from synapse.database import get_connected_student_performance
+        return get_connected_student_performance(self.db, teacher_id, student_id)
+
+    def get_student_connected_teachers(self, student_id: str) -> list[dict[str, Any]]:
+        """List teachers connected to student."""
+        from synapse.database import get_student_connected_teachers
+        return get_student_connected_teachers(self.db, student_id)
+
+    def save_attempt_diagnosis(self, attempt_id: str, diagnosis_data: dict[str, Any]) -> None:
+        """Persist authoritative diagnosis directly on attempt record."""
+        from synapse.database import save_attempt_diagnosis
+        save_attempt_diagnosis(self.db, attempt_id, diagnosis_data)
+
+    def get_attempt_diagnosis(self, attempt_id: str) -> dict[str, Any] | None:
+        """Retrieve authoritative diagnosis for attempt."""
+        from synapse.database import get_attempt_diagnosis
+        return get_attempt_diagnosis(self.db, attempt_id)
+
+    def _init_domain_tables(self) -> None:
+        """Ensure domain relational tables (users, classrooms, credentials) exist."""
+        try:
+            from synapse.database import init_domain_tables
+            init_domain_tables(self.db)
+        except Exception:
+            pass
 
     def close(self) -> None:
         self.db.close()

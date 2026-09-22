@@ -34,6 +34,14 @@ class RunState(str, Enum):
     AGGREGATING = "aggregating"
     COMPLETE = "complete"
 
+    @property
+    def is_terminal(self) -> bool:
+        return self is RunState.COMPLETE
+
+    @property
+    def is_suspended(self) -> bool:
+        return self in (RunState.TAG_CONFIRMATION, RunState.AWAITING_STUDENT)
+
 
 # Valid forward transitions
 VALID_TRANSITIONS: dict[RunState, list[RunState]] = {

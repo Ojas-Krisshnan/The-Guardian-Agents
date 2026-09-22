@@ -64,10 +64,10 @@ reconstructed into context each turn — never the other way round.
 | | |
 |---|---|
 | `slice/store.py:30` · `SCHEMA` | The tables. Note the two triggers at the bottom |
-| `slice/store.py:134` · `Store.append` | The only way to write. There is no update |
-| `slice/store.py:148` · `Store.latest` | The newest row of a kind — current state only when a kind has one instance per run |
-| `slice/store.py:157` · `Store.history` | Every version, oldest first — the diff a judge wants to see |
-| `slice/store.py:166` · `Store.replay` | The whole run in order |
+| `slice/store.py:181` · `Store.append` | The only way to write. There is no update |
+| `slice/store.py:195` · `Store.latest` | The newest row of a kind — current state only when a kind has one instance per run |
+| `slice/store.py:204` · `Store.history` | Every version, oldest first — the diff a judge wants to see |
+| `slice/store.py:213` · `Store.replay` | The whole run in order |
 
 **The design choice worth copying:** the versions table is append-only, and that
 is enforced by *SQLite triggers* rather than by convention. `UPDATE` or `DELETE`
@@ -94,13 +94,13 @@ fails loudly at the boundary where you can still see it.
 
 | | |
 |---|---|
-| `slice/llm.py:122` · `complete` | Takes a `schema=`; returns a parsed instance, never a string |
-| `slice/llm.py:240` · `_parse` | Validation |
-| `slice/llm.py:247` · `_repair` | One repair pass: shows the model its own output and the validation error |
-| `slice/llm.py:226` · `_strip_fence` | Forgives a markdown fence — a formatting habit, not a broken contract |
+| `slice/llm.py:209` · `complete` | Takes a `schema=`; returns a parsed instance, never a string |
+| `slice/llm.py:377` · `_parse` | Validation |
+| `slice/llm.py:384` · `_repair` | One repair pass: shows the model its own output and the validation error |
+| `slice/llm.py:363` · `_strip_fence` | Forgives a markdown fence — a formatting habit, not a broken contract |
 | `slice/records.py:45` · `Version` | The envelope every record travels in |
 | `slice/retrieve.py:118` · `search` | The corpus boundary — text arrives as a `Chunk` with an id, not as loose prose |
-| `slice/callback.py:39` · `answer` | The human boundary — the one place prose is unavoidable |
+| `slice/callback.py:37` · `answer` | The human boundary — the one place prose is unavoidable |
 
 **Why a repair pass and not a retry:** an identical second request usually fails
 identically. Showing the model its own bad output plus the specific error is
@@ -132,7 +132,7 @@ infinite loop. Every loop stops on something real.
 | `slice/budget.py:56` · `Budget.check_tokens` | Called **before** a request, not after |
 | `slice/budget.py:69` · `Budget.attempt` | Per-step allowance; raises when spent |
 | `slice/budget.py:82` · `Budget.reset_attempts` | Cleared on genuine success, so a later retry starts fresh |
-| `slice/runner.py:52` · `advance` | `max_steps` — a fence on the state machine itself |
+| `slice/runner.py:51` · `advance` | `max_steps` — a fence on the state machine itself |
 
 **Two bounds, and they must not share a counter.** A *spend limit* bounds cost —
 tokens, attempts, dollars — and that is the whole job of `slice/budget.py`. A
@@ -226,9 +226,9 @@ never does.
 | | |
 |---|---|
 | `slice/records.py:40` · `RunState.is_suspended` | Suspended is not terminal — and not only about humans |
-| `slice/callback.py:25` · `ask` | Parks the question, suspends the run, returns immediately |
-| `slice/callback.py:39` · `answer` | Appends the answer as an `expert_answer` record — free text — and wakes the run |
-| `slice/callback.py:57` · `sweep` | Times out unanswered questions into `unresolved_no_expert` |
+| `slice/callback.py:23` · `ask` | Parks the question, suspends the run, returns immediately |
+| `slice/callback.py:37` · `answer` | Appends the answer as an `expert_answer` record — free text — and wakes the run |
+| `slice/callback.py:56` · `sweep` | Times out unanswered questions into `unresolved_no_expert` |
 | `web/expert.py` | The page a real person answers on |
 
 **Suspension is a general mechanism.** It is filed under human-in-the-loop
@@ -271,8 +271,8 @@ decisions, because every interesting failure is in the middle steps.
 
 | | |
 |---|---|
-| `slice/llm.py:90` · `_Span` | One span per call |
-| `slice/config.py:44` · `Settings.tracing_enabled` | Off unless configured |
+| `slice/llm.py:177` · `_Span` | One span per call |
+| `slice/config.py:88` · `Settings.tracing_enabled` | Off unless configured |
 
 **Tracing no-ops when Langfuse is not set up**, and that is deliberate: no team
 should be blocked at hour zero by an observability signup. Add it at hour four.
@@ -300,7 +300,7 @@ sequencing *between* steps.
 
 | | |
 |---|---|
-| `slice/runner.py:52` · `advance` | The state machine. Knows nothing about your domain |
+| `slice/runner.py:51` · `advance` | The state machine. Knows nothing about your domain |
 | `slice/runner.py:31` · `Context` | What a step is handed |
 | `slice/runner.py:45` · `Flow` | What a domain must provide — see `demo/flow.py` |
 
@@ -366,13 +366,13 @@ in front of judges.
 
 | | |
 |---|---|
-| `slice/llm.py:66` · `_classify_402` | The two 402s that look identical and mean opposite things |
-| `slice/llm.py:43` · `CapExhausted` | **Your team** is capped — routine, get a top-up |
-| `slice/llm.py:47` · `PoolExhausted` | **The shared account** is empty — every team is about to stop |
-| `slice/llm.py:122` · `complete` | Falls back to a different provider family on 429/5xx |
-| `slice/callback.py:57` · `sweep` | No expert → recorded unknown, run continues |
+| `slice/llm.py:153` · `_classify_402` | The two 402s that look identical and mean opposite things |
+| `slice/llm.py:130` · `CapExhausted` | **Your team** is capped — routine, get a top-up |
+| `slice/llm.py:134` · `PoolExhausted` | **The shared account** is empty — every team is about to stop |
+| `slice/llm.py:209` · `complete` | Falls back to a different provider family on 429/5xx |
+| `slice/callback.py:56` · `sweep` | No expert → recorded unknown, run continues |
 | `slice/retrieve.py:118` · `search` | Empty corpus → say so, invent nothing |
-| `slice/runner.py:98` · `_fail` | Records **why** a run stopped, into the replayable history |
+| `slice/runner.py:96` · `_fail` | Records **why** a run stopped, into the replayable history |
 
 **A run that fails without leaving a reason is the one you cannot debug.**
 Every failure path writes a `failure` record with a kind and a detail, so

@@ -15,24 +15,22 @@ run forever - the timeout converts an unanswered question into a recorded
 """
 from __future__ import annotations
 
-from typing import Any
-
 from .config import Settings
 from .records import Question, RunState
 from .store import Store
 
 
 def ask(store: Store, run_id: str, question: str, context: dict,
-        settings: Settings, park_state: Any = None, resume_state: Any = None) -> str:
-    """Suspend the run on a human. Returns the question id."""
-    ctx = dict(context)
-    target_park = park_state or ctx.get("park_state", RunState.AWAITING_EXPERT)
-    if resume_state is not None: ctx["resume_state"] = getattr(resume_state, "value", str(resume_state))
-    if park_state is not None and "park_state" not in ctx:
-        ctx["park_state"] = getattr(park_state, "value", str(park_state))
-    qid = store.ask(run_id, question, ctx, settings.expert_timeout_minutes)
-    store.set_state(run_id, target_park)
-    store.append(run_id, "question", {"id": qid, "question": question, "context": ctx}, produced_by="system")
+        settings: Settings) -> str:
+    """Suspend the run on a human. Returns the question id.
+
+    The caller should return immediately after this - there is nothing to wait
+    for, and the point is that waiting is not this process's job.
+    """
+    qid = store.ask(run_id, question, context, settings.expert_timeout_minutes)
+    store.set_state(run_id, RunState.AWAITING_EXPERT)
+    store.append(run_id, "question", {"id": qid, "question": question, "context": context},
+                 produced_by="system")
     return qid
 
 
@@ -50,7 +48,8 @@ def answer(store: Store, question_id: str, text: str, who: str = "expert") -> st
                  {"question_id": question_id, "question": q.question,
                   "answer": text, "who": who, "source": "human_expert"},
                  produced_by=who)
-    _resume(store, q)
+    if store.get_state(q.run_id) is RunState.AWAITING_EXPERT:
+        store.set_state(q.run_id, RunState(q.context.get("resume_state", RunState.PROBING.value)))
     return q.run_id
 
 
@@ -70,7 +69,9 @@ def sweep(store: Store, run_id: str | None = None) -> list[Question]:
                       "who": None, "source": "unresolved_no_expert",
                       "note": "timed out - recorded as unknown, not guessed"},
                      produced_by="system")
-        _resume(store, q)
+        if store.get_state(q.run_id) is RunState.AWAITING_EXPERT:
+            store.set_state(q.run_id,
+                            RunState(q.context.get("resume_state", RunState.PROBING.value)))
         expired.append(q)
     return expired
 
@@ -78,15 +79,3 @@ def sweep(store: Store, run_id: str | None = None) -> list[Question]:
 def pending(store: Store, run_id: str | None = None) -> list[Question]:
     """Open, unexpired questions - what the expert form shows."""
     return [q for q in store.open_questions(run_id) if not q.is_expired]
-
-
-def _resume(store: Store, q: Question) -> None:
-    cur = store.get_state(q.run_id)
-    park = q.context.get("park_state", RunState.AWAITING_EXPERT.value)
-    if cur is RunState.AWAITING_EXPERT or cur == park or getattr(cur, "value", str(cur)) == getattr(park, "value", str(park)):
-        target = q.context.get("resume_state", RunState.PROBING.value)
-        try:
-            target = RunState(target)
-        except (ValueError, TypeError):
-            pass
-        store.set_state(q.run_id, target)

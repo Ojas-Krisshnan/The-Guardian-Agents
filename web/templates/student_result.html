@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Synapse Cycle — Test Result &amp; Notes</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+    .card { background: #1e293b; border-radius: 8px; padding: 2rem; max-width: 700px; margin: 0 auto; }
+    h1 { color: #38bdf8; }
+    .score-badge { display: inline-block; background: #047857; padding: 0.5rem 1rem; border-radius: 9999px; font-weight: bold; margin-bottom: 1rem; }
+    pre { background: #0f172a; padding: 1rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Diagnostic Test Results</h1>
+    <div class="score-badge">Score: {{ attempt.score }} / {{ attempt.total }}</div>
+    <p>Estimated Mastery: <strong>{{ "%.2f"|format(diagnosis.mastery_estimate * 100) }}%</strong></p>
+    <p>Trend: <strong>{{ diagnosis.trend.value if diagnosis.trend.value is defined else diagnosis.trend }}</strong></p>
+
+    <h2>Personalized Study Notes</h2>
+    <pre>{{ note.markdown }}</pre>
+  </div>
+</body>
+</html>

@@ -1,28 +1,24 @@
 {
-  "name": "synapse-cycle-frontend",
+  "name": "synapse-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "node --test tests/portal_initialization.test.js tests/login_improvements.test.js tests/student_classroom_removal.test.js tests/assessment_builder.test.js"
   },
   "dependencies": {
+    "lucide-react": "^0.475.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.4.8",
-    "@testing-library/react": "^15.0.7",
-    "@types/node": "^20.14.10",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "jsdom": "^24.1.0",
-    "typescript": "^5.5.3",
-    "vite": "^5.3.3",
-    "vitest": "^2.0.2"
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
   }
 }

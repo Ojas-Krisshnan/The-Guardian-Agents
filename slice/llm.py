@@ -23,11 +23,11 @@ A student cannot tell those apart from a raw error, so we do it for them.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 import json
 import time
-from typing import Any, Protocol, Type, runtime_checkable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Type
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -36,6 +36,92 @@ from .budget import Budget
 from .config import Settings
 
 API = "https://openrouter.ai/api/v1"
+
+
+class Provider(str, Enum):
+    OPENROUTER = "openrouter"
+    NIM = "nim"
+    OPENAI = "openai"
+
+
+class ProviderNotConfigured(RuntimeError):
+    """Raised when the selected provider has no API key. NEVER caught to switch providers."""
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: Provider
+    api_key: str
+    base_url: str
+    default_model: str
+    fallback_model: str | None = None
+
+    def __repr__(self) -> str:
+        masked = f"{self.api_key[:4]}...{self.api_key[-4:]}" if len(self.api_key) > 8 else "***"
+        return (
+            f"ProviderConfig(name={self.name}, api_key='{masked}', "
+            f"base_url='{self.base_url}', default_model='{self.default_model}', "
+            f"fallback_model='{self.fallback_model}')"
+        )
+
+
+def get_provider_config(settings: Settings, provider: Provider | None = None) -> ProviderConfig:
+    """Resolve provider config. Explicit argument > SLICE_PROVIDER > OpenRouter. No silent fallback."""
+    chosen_str = (provider.value if hasattr(provider, "value") else str(provider)) if provider else getattr(settings, "provider", "openrouter")
+    chosen_str = (chosen_str or "openrouter").strip().lower()
+    try:
+        chosen = Provider(chosen_str)
+    except ValueError:
+        raise ProviderNotConfigured(
+            f"Unsupported SLICE_PROVIDER '{chosen_str}'. Supported providers: openrouter, nim, openai"
+        )
+
+    if chosen is Provider.OPENAI:
+        key = getattr(settings, "openai_api_key", None)
+        if not key:
+            raise ProviderNotConfigured("SLICE_PROVIDER=openai but OPENAI_API_KEY is not set")
+        base = getattr(settings, "openai_base_url", "https://api.openai.com/v1")
+        if key.startswith("http://") or key.startswith("https://"):
+            base = key
+        return ProviderConfig(
+            Provider.OPENAI,
+            key,
+            base,
+            getattr(settings, "openai_model", "gpt-4o-mini"),
+            getattr(settings, "openai_fallback_model", None),
+        )
+
+    if chosen is Provider.NIM:
+        if not getattr(settings, "nim_api_key", None):
+            raise ProviderNotConfigured("SLICE_PROVIDER=nim but NIM_API_KEY is not set")
+        base = getattr(settings, "nim_base_url", "https://integrate.api.nvidia.com/v1")
+        key = getattr(settings, "nim_api_key", "")
+        if key.startswith("http://") or key.startswith("https://"):
+            base = key
+        return ProviderConfig(Provider.NIM, key, base,
+                              getattr(settings, "nim_model", "meta/llama-3.1-70b-instruct"),
+                              getattr(settings, "nim_fallback_model", None))
+
+    key = getattr(settings, "openrouter_api_key", "") or getattr(settings, "api_key", "")
+    if not key:
+        raise ProviderNotConfigured("OPENROUTER_API_KEY is not set")
+    base = getattr(settings, "openrouter_base_url", "https://openrouter.ai/api/v1")
+    if key.startswith("http://") or key.startswith("https://"):
+        base = key
+    return ProviderConfig(Provider.OPENROUTER, key, base,
+                          getattr(settings, "slice_model", "inclusionai/ling-3.0-flash"),
+                          getattr(settings, "slice_fallback_model", None))
+
+
+def get_openai_client(settings: Settings | None = None, pcfg: ProviderConfig | None = None):
+    """Constructs an official OpenAI client without exposing credentials."""
+    import openai
+    if pcfg is None:
+        if settings is None:
+            raise ValueError("Must provide either settings or pcfg")
+        pcfg = get_provider_config(settings, provider=Provider.OPENAI)
+    return openai.OpenAI(api_key=pcfg.api_key, base_url=pcfg.base_url)
+
 
 class ModelError(RuntimeError):
     """Base for everything that can go wrong at the model boundary."""
@@ -129,7 +215,7 @@ def complete(
     model: str | None = None,
     step: str = "call",
     timeout: float = 120.0,
-    provider: Provider | str | None = None,
+    provider: Provider | None = None,
 ) -> Any:
     """Call a model. Returns a parsed `schema` instance, or raw text if no
     schema was asked for.
@@ -140,11 +226,14 @@ def complete(
     """
     budget.check_tokens()                       # refuse to start, not to finish
 
-    cfg = get_provider_config(settings, provider)
-    primary = model or cfg.default_model
+    pcfg = get_provider_config(settings, provider)
+    api_url = pcfg.base_url.rstrip("/")
+    api_key = pcfg.api_key
+
+    primary = model or pcfg.default_model
     attempts: list[tuple[str, str]] = [(primary, "primary")]
-    if cfg.fallback_model and cfg.fallback_model != primary:
-        attempts.append((cfg.fallback_model, "fallback"))
+    if pcfg.fallback_model and pcfg.fallback_model != primary:
+        attempts.append((pcfg.fallback_model, "fallback"))
 
     last_text = ""
     with _Span(settings, f"llm:{step}", {"model": primary, "step": step}) as span:
@@ -159,44 +248,89 @@ def complete(
                 body["response_format"] = {"type": "json_object"}
 
             t0 = time.time()
-            try:
-                r = httpx.post(f"{cfg.base_url}/chat/completions", json=body, timeout=timeout,
-                               headers={"Authorization": f"Bearer {cfg.api_key}"})
-            except httpx.RequestError as e:
-                if role == "fallback":
-                    raise ModelError(
-                        f"Both models unreachable ({e}). Run "
-                        "`python scripts/doctor.py` - this is usually the network "
-                        "or a provider outage, not your code.") from e
-                continue                       # network hiccup: try the fallback
-
-            if r.status_code == 402:
-                raise _classify_402(_safe_json(r))     # never worth a retry
-            if r.status_code in (429, 500, 502, 503) and role == "primary":
-                continue                                # transient: fall back
-            if r.status_code != 200:
-                raise ModelError(f"{mid} returned HTTP {r.status_code}: {r.text[:300]}")
-
-            data = r.json()
-            used = (data.get("usage") or {}).get("total_tokens", 0)
-            budget.record_tokens(used)
-            choice = data["choices"][0]
-            last_text = choice["message"]["content"] or ""
-
-            # Cut off mid-answer? Retrying the same model changes nothing - it
-            # hits the same ceiling. Fall back instead: the fallback is a
-            # different model and may simply be terser.
-            if choice.get("finish_reason") == "length":
-                span.record(output={"model": mid, "truncated": True, "tokens": used})
-                if role == "primary" and len(attempts) > 1:
+            if pcfg.name is Provider.OPENAI:
+                try:
+                    import openai
+                    client = get_openai_client(pcfg=pcfg)
+                    call_kwargs: dict[str, Any] = {
+                        "model": mid,
+                        "max_tokens": settings.max_tokens,
+                        "temperature": 0,
+                        "messages": messages,
+                        "timeout": timeout,
+                    }
+                    if schema is not None:
+                        call_kwargs["response_format"] = {"type": "json_object"}
+                    res = client.chat.completions.create(**call_kwargs)
+                    used = (res.usage.total_tokens if res.usage else 0)
+                    budget.record_tokens(used)
+                    choice = res.choices[0]
+                    last_text = choice.message.content or ""
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    if finish_reason == "length":
+                        span.record(output={"model": mid, "truncated": True, "tokens": used})
+                        if role == "primary" and len(attempts) > 1:
+                            continue
+                        raise Truncated(
+                            f"{mid} was cut off at max_tokens ({settings.max_tokens}) "
+                            "before finishing. This is not a prompt problem.\n"
+                            "  -> Raise SLICE_MAX_TOKENS, or ask the agent for a shorter "
+                            "answer (fewer items, shorter fields).")
+                    span.record(output={"model": mid, "role": role, "tokens": used,
+                                        "seconds": round(time.time() - t0, 2)})
+                except openai.AuthenticationError as e:
+                    raise ModelError("OpenAI authentication failed: Invalid API key. Check OPENAI_API_KEY.") from e
+                except openai.RateLimitError as e:
+                    if role == "fallback" or len(attempts) <= 1:
+                        raise CapExhausted(f"OpenAI quota/rate limit reached: {e.message}") from e
                     continue
-                raise Truncated(
-                    f"{mid} was cut off at max_tokens ({settings.max_tokens}) "
-                    "before finishing. This is not a prompt problem.\n"
-                    "  -> Raise SLICE_MAX_TOKENS, or ask the agent for a shorter "
-                    "answer (fewer items, shorter fields).")
-            span.record(output={"model": mid, "role": role, "tokens": used,
-                                "seconds": round(time.time() - t0, 2)})
+                except openai.APIConnectionError as e:
+                    if role == "fallback" or len(attempts) <= 1:
+                        raise ModelError(f"Both models unreachable ({e}). Check network connection.") from e
+                    continue
+                except openai.APIStatusError as e:
+                    if e.status_code in (429, 500, 502, 503) and role == "primary" and len(attempts) > 1:
+                        continue
+                    raise ModelError(f"{mid} returned HTTP {e.status_code}: {e.message}") from e
+            else:
+                try:
+                    r = httpx.post(f"{api_url}/chat/completions", json=body, timeout=timeout,
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                except httpx.RequestError as e:
+                    if role == "fallback":
+                        raise ModelError(
+                            f"Both models unreachable ({e}). Run "
+                            "`python scripts/doctor.py` - this is usually the network "
+                            "or a provider outage, not your code.") from e
+                    continue                       # network hiccup: try the fallback
+
+                if r.status_code == 402:
+                    raise _classify_402(_safe_json(r))     # never worth a retry
+                if r.status_code in (429, 500, 502, 503) and role == "primary":
+                    continue                                # transient: fall back
+                if r.status_code != 200:
+                    raise ModelError(f"{mid} returned HTTP {r.status_code}: {r.text[:300]}")
+
+                data = r.json()
+                used = (data.get("usage") or {}).get("total_tokens", 0)
+                budget.record_tokens(used)
+                choice = data["choices"][0]
+                last_text = choice["message"]["content"] or ""
+
+                # Cut off mid-answer? Retrying the same model changes nothing - it
+                # hits the same ceiling. Fall back instead: the fallback is a
+                # different model and may simply be terser.
+                if choice.get("finish_reason") == "length":
+                    span.record(output={"model": mid, "truncated": True, "tokens": used})
+                    if role == "primary" and len(attempts) > 1:
+                        continue
+                    raise Truncated(
+                        f"{mid} was cut off at max_tokens ({settings.max_tokens}) "
+                        "before finishing. This is not a prompt problem.\n"
+                        "  -> Raise SLICE_MAX_TOKENS, or ask the agent for a shorter "
+                        "answer (fewer items, shorter fields).")
+                span.record(output={"model": mid, "role": role, "tokens": used,
+                                    "seconds": round(time.time() - t0, 2)})
 
             if schema is None:
                 return last_text
@@ -207,7 +341,7 @@ def complete(
 
             # One repair pass. Show the model its own output and the error -
             # a second identical request usually fails identically.
-            repaired = _repair(settings, budget, messages, last_text, schema, mid, timeout, cfg)
+            repaired = _repair(settings, budget, messages, last_text, schema, mid, timeout, pcfg=pcfg)
             if repaired is not None:
                 return repaired
             if role == "fallback":
@@ -247,7 +381,7 @@ def _parse(text: str, schema: Type[BaseModel]):
         return None
 
 
-def _repair(settings, budget, messages, bad_text, schema, mid, timeout, cfg: ProviderConfig | None = None):
+def _repair(settings, budget, messages, bad_text, schema, mid, timeout, pcfg: ProviderConfig | None = None):
     budget.check_tokens()
     try:
         schema.model_validate_json(_strip_fence(bad_text))
@@ -263,10 +397,28 @@ def _repair(settings, budget, messages, bad_text, schema, mid, timeout, cfg: Pro
             f"Required JSON schema:\n{json.dumps(schema.model_json_schema())}\n\n"
             "Reply with the corrected JSON object and nothing else."},
     ]
-    base_url = cfg.base_url if cfg else API
-    api_key = cfg.api_key if cfg else settings.api_key
+
+    if pcfg is not None and pcfg.name is Provider.OPENAI:
+        try:
+            client = get_openai_client(pcfg=pcfg)
+            res = client.chat.completions.create(
+                model=mid,
+                max_tokens=settings.max_tokens,
+                temperature=0,
+                messages=fix,
+                response_format={"type": "json_object"},
+                timeout=timeout,
+            )
+            used = res.usage.total_tokens if res.usage else 0
+            budget.record_tokens(used)
+            return _parse(res.choices[0].message.content or "", schema)
+        except Exception:
+            return None
+
+    api_url = (pcfg.base_url if pcfg else getattr(settings, "openrouter_base_url", "https://openrouter.ai/api/v1")).rstrip("/")
+    api_key = pcfg.api_key if pcfg else getattr(settings, "openrouter_api_key", getattr(settings, "api_key", ""))
     try:
-        r = httpx.post(f"{base_url}/chat/completions", timeout=timeout,
+        r = httpx.post(f"{api_url}/chat/completions", timeout=timeout,
                        headers={"Authorization": f"Bearer {api_key}"},
                        json={"model": mid, "max_tokens": settings.max_tokens,
                              "temperature": 0, "messages": fix,
@@ -280,66 +432,3 @@ def _repair(settings, budget, messages, bad_text, schema, mid, timeout, cfg: Pro
     data = r.json()
     budget.record_tokens((data.get("usage") or {}).get("total_tokens", 0))
     return _parse(data["choices"][0]["message"]["content"] or "", schema)
-
-
-# ---------------------------------------------------------------------------
-# Provider Abstraction (Contracts.md Section D.3)
-# ---------------------------------------------------------------------------
-
-class Provider(str, Enum):
-    OPENROUTER = "openrouter"
-    NIM = "nim"
-
-
-class ProviderNotConfigured(RuntimeError):
-    """Raised when the selected provider has no API key. NEVER caught to switch providers."""
-
-
-@dataclass(frozen=True)
-class ProviderConfig:
-    name: Provider
-    api_key: str
-    base_url: str
-    default_model: str
-    fallback_model: str | None = None
-
-
-@runtime_checkable
-class ModelClient(Protocol):
-    """Shape shared by the real HTTP client and every stub.py stand-in."""
-    async def complete(
-        self,
-        *,
-        messages: list[dict],
-        schema: type[BaseModel] | None,
-        model: str,
-        max_tokens: int,
-        timeout: float,
-    ) -> Any: ...
-
-
-def get_provider_config(settings: Settings, provider: Provider | str | None = None) -> ProviderConfig:
-    """Resolve provider config. Explicit argument > SLICE_PROVIDER > OpenRouter. No silent fallback."""
-    if isinstance(provider, str):
-        provider = Provider(provider.lower())
-    chosen = provider or Provider(settings.provider)
-    if chosen is Provider.NIM:
-        if not settings.nim_api_key:
-            raise ProviderNotConfigured("SLICE_PROVIDER=nim but NIM_API_KEY is not set")
-        return ProviderConfig(
-            name=Provider.NIM,
-            api_key=settings.nim_api_key,
-            base_url=settings.nim_base_url,
-            default_model=settings.nim_model,
-            fallback_model=settings.nim_fallback_model,
-        )
-    if not settings.openrouter_api_key:
-        raise ProviderNotConfigured("OPENROUTER_API_KEY is not set")
-    return ProviderConfig(
-        name=Provider.OPENROUTER,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        default_model=settings.slice_model,
-        fallback_model=settings.slice_fallback_model,
-    )
-

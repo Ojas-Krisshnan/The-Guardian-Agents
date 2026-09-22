@@ -239,6 +239,318 @@ export interface ErrorResponse {
   details: Record<string, unknown>;
 }
 
+export interface LoginRequest {
+  username?: string;
+  password?: string;
+  login_id?: UUID;
+  role?: string;
+}
+
+export interface RegisterRequest {
+  role: string;
+  username: string;
+  password: string;
+  name: string;
+  email?: string;
+}
+
+export interface UserResponse {
+  id: UUID;
+  role: string;
+  name: string;
+  username?: string;
+  login_id?: UUID;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: UserResponse;
+}
+
+export interface CreateClassroomRequest {
+  name: string;
+  subject: string;
+  description: string;
+  academic_year: string;
+}
+
+export interface ClassroomResponse {
+  id: UUID;
+  teacher_id: string;
+  name: string;
+  subject: string;
+  description: string;
+  academic_year: string;
+  created_at: number;
+  student_count: number;
+  assessment_count: number;
+  average_mastery: number;
+}
+
+export interface GenerateStudentsRequest {
+  count: number;
+}
+
+export interface StudentCredentialResponse {
+  student_id: string;
+  login_id: UUID;
+  name: string;
+  is_active: boolean;
+  created_at: number;
+}
+
+export interface GenerateStudentsResponse {
+  classroom_id: UUID;
+  students: StudentCredentialResponse[];
+}
+
+export interface ClassroomStudentItem {
+  student_id: string;
+  name: string;
+  login_id?: UUID;
+  is_active: boolean;
+  joined_at: number;
+}
+
+export interface CreateAssessmentRequest {
+  title: string;
+  description: string;
+  concept_ids: string[];
+}
+
+export interface AssessmentResponse {
+  id: UUID;
+  classroom_id: UUID;
+  title: string;
+  description: string;
+  concept_ids: string[];
+  status: string;
+  created_by: string;
+  created_at: number;
+  published_at?: number;
+  question_count: number;
+}
+
+export interface UploadQuestionItem {
+  question_text: string;
+  options: string[];
+  correct_answer: string;
+  concept_id: UUID;
+  explanation: string;
+  question_type: string;
+}
+
+export interface ExtractedQuestionItem {
+  question_text: string;
+  options: string[];
+  correct_answer: string;
+  concept_id: string;
+  explanation?: string;
+  question_type?: string;
+  needs_review?: boolean;
+  warning?: string | null;
+}
+
+export interface ExtractDocumentResponse {
+  title: string;
+  topic: string;
+  questions: ExtractedQuestionItem[];
+  total_extracted: number;
+  warnings: string[];
+}
+
+export interface UploadQuestionsRequest {
+  questions: UploadQuestionItem[];
+}
+
+export interface UploadAnswersRequest {
+  answers: Record<string, string>;
+}
+
+export interface MapConceptsRequest {
+  mappings: Record<string, string>;
+}
+
+export interface AssessmentQuestionResponse {
+  id: UUID;
+  assessment_id: UUID;
+  concept_id: UUID;
+  question_text: string;
+  question_type: string;
+  options: string[];
+  correct_answer?: string;
+  explanation?: string;
+  order_num: number;
+}
+
+export interface TakeAssessmentResponse {
+  assessment: AssessmentResponse;
+  questions: AssessmentQuestionResponse[];
+}
+
+export interface StudentAttemptSubmitRequest {
+  answers: Record<string, string>;
+}
+
+export interface StudentAnswerDetail {
+  question_id: UUID;
+  answer: string;
+  is_correct: boolean;
+  question_text: string;
+  options: string[];
+  correct_answer: string;
+  concept_id: UUID;
+}
+
+export interface StudentAttemptResponse {
+  id: UUID;
+  assessment_id: UUID;
+  student_id: string;
+  submitted_at: number;
+  score: number;
+  total: number;
+  percentage: number;
+  answers: StudentAnswerDetail[];
+  diagnosis?: Diagnosis;
+  note?: NoteVersion;
+}
+
+export interface AttemptHistoryItem {
+  assessment_id: UUID;
+  title: string;
+  score: number;
+  total: number;
+  percentage: number;
+  submitted_at: number;
+}
+
+export interface StudentAnalyticsResponse {
+  student_id: string;
+  total_attempts: number;
+  overall_mastery: number;
+  history: AttemptHistoryItem[];
+  concept_mastery: Record<string, number>;
+}
+
+export interface ConceptPerformanceItem {
+  concept_id: UUID;
+  total_questions: number;
+  correct_answers: number;
+  mastery_percentage: number;
+}
+
+export interface ClassroomAnalyticsResponse {
+  classroom_id: UUID;
+  total_students: number;
+  total_attempts: number;
+  average_mastery: number;
+  distribution: Record<string, number>;
+  concept_performance: ConceptPerformanceItem[];
+}
+
+export interface TeacherInsightResponse {
+  id: UUID;
+  classroom_id: UUID;
+  assessment_id?: UUID;
+  concept_id: UUID;
+  finding: string;
+  evidence: string;
+  recommendation: string;
+  generated_at: number;
+}
+
+export interface TeacherConnectionCodeResponse {
+  code: string;
+  teacher_id: string;
+}
+
+export interface ConnectedStudentSummary {
+  student_id: string;
+  name: string;
+  username: string;
+  email?: string;
+  login_id?: UUID;
+  joined_at: number;
+  total_attempts: number;
+  overall_mastery?: number;
+  recent_score?: number;
+  trend: string;
+}
+
+export interface StudentAttemptSummaryItem {
+  id: UUID;
+  assessment_id: UUID;
+  title: string;
+  score: number;
+  total: number;
+  percentage: number;
+  submitted_at: number;
+}
+
+export interface DiagnosticSummaryItem {
+  total_questions_answered: number;
+  correct_answers: number;
+  incorrect_answers: number;
+  accuracy_percentage: number;
+}
+
+export interface DiagnosisItemSummary {
+  question_id: UUID;
+  classification: string;
+  reason: string;
+}
+
+export interface DiagnosisDetailResponse {
+  id: UUID;
+  student_id: string;
+  concept_id: UUID;
+  items: DiagnosisItemSummary[];
+  mastery_estimate: number;
+  trend: string;
+  created_at: number;
+}
+
+export interface ConnectedStudentPerformanceResponse {
+  student_id: string;
+  name: string;
+  username: string;
+  email?: string;
+  login_id?: UUID;
+  joined_at: number;
+  total_attempts: number;
+  overall_mastery?: number;
+  average_score?: number;
+  recent_score?: number;
+  trend: string;
+  recent_attempts: StudentAttemptSummaryItem[];
+  concept_mastery: Record<string, number>;
+  concepts_studied: string[];
+  concepts_needing_attention: string[];
+  diagnostics_summary: DiagnosticSummaryItem;
+  latest_diagnosis?: DiagnosisDetailResponse;
+}
+
+export interface StudentConnectRequest {
+  code: string;
+}
+
+export interface ConnectedTeacherInfo {
+  id: UUID;
+  name: string;
+  email?: string;
+  username?: string;
+}
+
+export interface StudentConnectResponse {
+  success: boolean;
+  message: string;
+  teacher: ConnectedTeacherInfo;
+}
+
+export interface StudentTeacherListResponse {
+  teachers: ConnectedTeacherInfo[];
+}
+
 // ── CONSTANTS ──
 
 export const MAX_REVISIONS_PER_CYCLE = 3;

@@ -39,24 +39,20 @@ class Settings:
     langfuse_public: str
     langfuse_secret: str
     langfuse_host: str
-
-    @property
-    def tracing_enabled(self) -> bool:
-        return bool(self.langfuse_public and self.langfuse_secret)
-
-    # NEW — provider selection
-    provider: str = "openrouter"                     # SLICE_PROVIDER: "openrouter" | "nim"; validated at load
+    provider: str = "openrouter"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-
-    # NEW — NVIDIA NIM (opt-in)
-    nim_api_key: str | None = None                   # NIM_API_KEY
-    nim_base_url: str = "https://integrate.api.nvidia.com/v1"   # NIM_BASE_URL
-    nim_model: str = "meta/llama-3.1-70b-instruct"   # NIM_MODEL
-    nim_fallback_model: str | None = "nvidia/nemotron-3-ultra"  # NIM_FALLBACK_MODEL
-
-    # NEW — Synapse
-    synapse_jwt_secret: str | None = None            # SYNAPSE_JWT_SECRET (api/auth.py; required outside tests)
-    tag_confirmation_timeout_seconds: int = 600      # SYNAPSE_TAG_TIMEOUT_SECONDS (default = schemas constant)
+    nim_api_key: str | None = None
+    nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nim_model: str = "meta/llama-3.1-70b-instruct"
+    nim_fallback_model: str | None = "nvidia/nemotron-3-ultra"
+    openai_api_key: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+    openai_fallback_model: str | None = "gpt-4o"
+    synapse_jwt_secret: str = "dev-secret-change-in-prod"
+    tag_confirmation_timeout_seconds: int = 600
+    database_path: str = "synapse.db"
+    slice_db_path: str = "run.db"
 
     @property
     def openrouter_api_key(self) -> str:
@@ -70,14 +66,33 @@ class Settings:
     def slice_fallback_model(self) -> str:
         return self.fallback_model
 
+    @property
+    def active_api_key(self) -> str:
+        p = (self.provider or "openrouter").lower()
+        if p == "openai":
+            return self.openai_api_key or ""
+        elif p == "nim":
+            return self.nim_api_key or ""
+        return self.api_key
+
+    @property
+    def active_model(self) -> str:
+        p = (self.provider or "openrouter").lower()
+        if p == "openai":
+            return self.openai_model
+        elif p == "nim":
+            return self.nim_model
+        return self.model
+
+    @property
+    def tracing_enabled(self) -> bool:
+        return bool(self.langfuse_public and self.langfuse_secret)
+
 
 def settings(reload: bool = True) -> Settings:
     if reload:
         load_env()
     g = os.environ.get
-    prov = g("SLICE_PROVIDER", "openrouter").strip().lower()
-    if prov not in ("openrouter", "nim"):
-        raise ValueError(f"Invalid SLICE_PROVIDER: {prov!r}. Must be 'openrouter' or 'nim'.")
     return Settings(
         api_key               = g("OPENROUTER_API_KEY", "").strip(),
         model                 = g("SLICE_MODEL", "inclusionai/ling-3.0-flash").strip(),
@@ -90,12 +105,18 @@ def settings(reload: bool = True) -> Settings:
         langfuse_public       = g("LANGFUSE_PUBLIC_KEY", "").strip(),
         langfuse_secret       = g("LANGFUSE_SECRET_KEY", "").strip(),
         langfuse_host         = g("LANGFUSE_HOST", "https://cloud.langfuse.com").strip(),
-        provider              = prov,
+        provider              = g("SLICE_PROVIDER", "openrouter").strip(),
         openrouter_base_url   = g("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip(),
         nim_api_key           = g("NIM_API_KEY", "").strip() or None,
         nim_base_url          = g("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1").strip(),
         nim_model             = g("NIM_MODEL", "meta/llama-3.1-70b-instruct").strip(),
         nim_fallback_model    = g("NIM_FALLBACK_MODEL", "nvidia/nemotron-3-ultra").strip() or None,
-        synapse_jwt_secret    = g("SYNAPSE_JWT_SECRET", "").strip() or None,
+        openai_api_key        = g("OPENAI_API_KEY", "").strip() or None,
+        openai_base_url       = g("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
+        openai_model          = g("OPENAI_MODEL", "gpt-4o-mini").strip(),
+        openai_fallback_model = g("OPENAI_FALLBACK_MODEL", "gpt-4o").strip() or None,
+        synapse_jwt_secret    = g("SYNAPSE_JWT_SECRET", "dev-secret-change-in-prod").strip(),
         tag_confirmation_timeout_seconds = int(g("SYNAPSE_TAG_TIMEOUT_SECONDS", "600")),
+        database_path         = g("SYNAPSE_DB_PATH", str(Path(__file__).resolve().parent.parent / "synapse.db")).strip(),
+        slice_db_path         = g("SLICE_DB", "run.db").strip(),
     )

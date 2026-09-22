@@ -1,44 +1,38 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Diagnostic Quiz - Synapse</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 2rem; }
-        .card { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; border: 1px solid #334155; }
-        h1 { color: #a855f7; margin-top: 0; }
-        .q-card { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
-        .q-text { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; color: #f1f5f9; }
-        .opt-label { display: block; background: #1e293b; border: 1px solid #475569; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.5rem; cursor: pointer; }
-        .opt-label:hover { border-color: #a855f7; }
-        input[type="radio"] { margin-right: 0.75rem; }
-        button { background: #9333ea; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1rem; }
-        button:hover { background: #7e22ce; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Synapse Cycle — Take Diagnostic Test</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; }
+    .card { background: #1e293b; border-radius: 8px; padding: 2rem; max-width: 650px; margin: 0 auto; }
+    h1 { color: #38bdf8; }
+    .question { background: #334155; padding: 1.25rem; border-radius: 6px; margin-bottom: 1.5rem; }
+    .option { margin-top: 0.5rem; display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+    button { background: #10b981; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; cursor: pointer; }
+  </style>
 </head>
 <body>
-    <div class="card">
-        <h1>Diagnostic Assessment: {{ test.concept_name }}</h1>
-        <p>Answer the questions below to diagnose your mastery and receive personalized study notes.</p>
-
-        <form method="POST" action="/web/student/attempts/{{ test.id }}">
-            <input type="hidden" name="test_id" value="{{ test.id }}">
-            <input type="hidden" name="run_id" value="{{ run_id }}">
-
-            {% for q in test.questions %}
-            <div class="q-card">
-                <div class="q-text">{{ loop.index }}. {{ q.text }}</div>
-                {% for opt in q.options %}
-                <label class="opt-label">
-                    <input type="radio" name="q_{{ q.id }}" value="{{ opt }}" required>
-                    {{ opt }}
-                </label>
-                {% endfor %}
-            </div>
-            {% endfor %}
-
-            <button type="submit">Submit Assessment</button>
-        </form>
-    </div>
+  <div class="card">
+    <h1>{{ test.concept_name }} Diagnostic Test</h1>
+    <p>Please answer the following multiple-choice questions:</p>
+    <form method="POST" action="/web/student/attempts/{{ test.id }}">
+      <label>Student ID: </label>
+      <input type="text" name="student_id" value="student_1" required style="margin-bottom: 1rem; padding: 0.5rem; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #fff;" />
+      
+      {% for q in test.questions %}
+      <div class="question">
+        <p><strong>Question {{ loop.index }}:</strong> {{ q.text }}</p>
+        {% for opt in q.options %}
+        <label class="option">
+          <input type="radio" name="{{ q.id }}" value="{{ opt }}" required />
+          {{ opt }}
+        </label>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      <button type="submit">Submit Answers</button>
+    </form>
+  </div>
 </body>
 </html>

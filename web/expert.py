@@ -22,15 +22,15 @@ from __future__ import annotations
 import html
 import os
 
-from fastapi import Form, Request
+from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi import FastAPI
 
 from slice import callback
 from slice.config import settings
 from slice.store import Store
 
-DB = os.environ.get("SLICE_DB", "run.db")
+DB = settings().slice_db_path
+router = APIRouter(tags=["expert"])
 app = FastAPI(title="Expert callback")
 
 
@@ -67,7 +67,7 @@ def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(PAGE.format(title=html.escape(title), body=body))
 
 
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 def index():
     s = _store()
     callback.sweep(s)                     # expire anything past its deadline
@@ -87,7 +87,7 @@ def index():
                  "settle these. Your answer resumes it.</p>" + items)
 
 
-@app.get("/q/{qid}", response_class=HTMLResponse)
+@router.get("/q/{qid}", response_class=HTMLResponse)
 def show(qid: str):
     q = _store().get_question(qid)
     if q is None:
@@ -117,7 +117,7 @@ def show(qid: str):
                  "model already believed.</p>")
 
 
-@app.post("/q/{qid}")
+@router.post("/q/{qid}")
 def submit(qid: str, answer: str = Form(...), who: str = Form("expert")):
     text = (answer or "").strip()
     if not text:
@@ -126,8 +126,11 @@ def submit(qid: str, answer: str = Form(...), who: str = Form("expert")):
     return RedirectResponse("/thanks", status_code=303)
 
 
-@app.get("/thanks", response_class=HTMLResponse)
+@router.get("/thanks", response_class=HTMLResponse)
 def thanks():
     return _page("Thank you",
                  "<h1>Thank you</h1><p class='sub'>The run has resumed with your answer.</p>"
                  "<p><a href='/'>Any others?</a></p>")
+
+
+app.include_router(router)

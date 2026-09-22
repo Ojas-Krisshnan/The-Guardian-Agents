@@ -1,106 +1,90 @@
-"""
-Server-rendered web endpoints for teacher workflows.
-Authoritative contract: Contracts.md Sections D.5, D.6.
-"""
+# web/teacher.py
+"""Server-rendered callback UI for teacher tag confirmation."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-from fastapi import APIRouter, Form, HTTPException, Request
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from slice import callback
-from synapse.runtime.service import get_service
-from synapse.schemas import ConceptNode, RecordKind
+from api.dependencies import get_settings_dep, get_store
+from slice.config import Settings
+from slice.store import Store
+from synapse.runtime.flow import advance
+from synapse.schemas import CanonicalNote, ConceptNode, RecordKind
 from synapse.state_machine import RunState
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-router = APIRouter(prefix="/web/teacher", tags=["web_teacher"])
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+router = APIRouter(tags=["web-teacher"])
 
 
-@router.get("/tags/{run_id}", response_class=HTMLResponse)
-async def get_teacher_tags_page(request: Request, run_id: str):
-    service = get_service()
-    try:
-        current_state = service.store.get_state(run_id, state_type=RunState)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Run not found")
+@router.get("/web/teacher/tags/{run_id}", response_class=HTMLResponse)
+async def get_teacher_tags_form(
+    run_id: str,
+    request: Request,
+    store: Store = Depends(get_store),
+):
+    note_data = store.latest(run_id, RecordKind.CANONICAL_NOTE)
+    if not note_data:
+        raise HTTPException(status_code=404, detail="Canonical note not found")
 
-    scope = service.store.meta(run_id).get("scope", {})
-    concept_name = scope.get("concept_name", "Curriculum Topic")
-
-    concepts = []
-    latest_note = service.store.latest(run_id, RecordKind.CANONICAL_NOTE.value)
-    if latest_note:
-        concepts = [
-            ConceptNode.model_validate(c)
-            for c in latest_note.get("extracted_concepts", [])
-        ]
-
+    canonical = CanonicalNote.model_validate(note_data)
     return templates.TemplateResponse(
-        request=request,
-        name="teacher_tags.html",
-        context={
-            "run_id": run_id,
-            "concept_name": concept_name,
-            "concepts": concepts,
-        },
+        "teacher_tags.html",
+        {"request": request, "run_id": run_id, "concepts": canonical.extracted_concepts},
     )
 
 
-@router.post("/tags/{run_id}")
-async def post_teacher_tags(request: Request, run_id: str):
-    service = get_service()
+@router.post("/web/teacher/tags/{run_id}", response_class=HTMLResponse)
+async def post_teacher_tags(
+    run_id: str,
+    request: Request,
+    store: Store = Depends(get_store),
+    settings: Settings = Depends(get_settings_dep),
+):
     form_data = await request.form()
+    note_data = store.latest(run_id, RecordKind.CANONICAL_NOTE)
+    if not note_data:
+        raise HTTPException(status_code=404, detail="Canonical note not found")
 
-    # Find open question for tag confirmation
-    open_qs = [q for q in service.store.open_questions(run_id) if not q.is_expired]
-    if not open_qs:
-        raise HTTPException(status_code=409, detail="Tag confirmation question not open or already answered")
-
-    qid = open_qs[0].id
-
-    # Parse edited concepts from form
+    canonical = CanonicalNote.model_validate(note_data)
     edited_concepts = []
-    idx = 0
-    while f"concept_name_{idx}" in form_data:
-        cid = form_data.get(f"concept_id_{idx}")
-        name = form_data.get(f"concept_name_{idx}")
-        summary = form_data.get(f"concept_summary_{idx}")
-        if cid and name and summary:
-            edited_concepts.append(
-                ConceptNode(id=str(cid), name=str(name), summary=str(summary))
+    for idx, orig in enumerate(canonical.extracted_concepts):
+        name = form_data.get(f"concept_name_{idx}", orig.name)
+        summary = form_data.get(f"concept_summary_{idx}", orig.summary)
+        edited_concepts.append(
+            ConceptNode(
+                id=orig.id,
+                name=name,
+                summary=summary,
+                prerequisites=orig.prerequisites,
             )
-        idx += 1
+        )
 
-    answer_payload = {
-        "confirmed": True,
-        "edited_concepts": [c.model_dump(mode="json") for c in edited_concepts],
-    }
-    callback.answer(
-        service.store,
-        qid,
-        json.dumps(answer_payload),
-        who="teacher_web",
-    )
-    service.advance(run_id)
+    open_qs = store.open_questions(run_id)
+    if open_qs:
+        qid = open_qs[0].id
+        answer_payload = {
+            "confirmed": True,
+            "edited_concepts": [c.model_dump(mode="json") for c in edited_concepts],
+            "timed_out": False,
+        }
+        store.answer(qid, json.dumps(answer_payload))
+        advance(store, run_id, settings)
 
-    return RedirectResponse(
-        url=f"/web/teacher/tags/{run_id}/confirm",
-        status_code=303,
-    )
+    return RedirectResponse(url=f"/web/teacher/tags/{run_id}/confirm", status_code=303)
 
 
-@router.get("/tags/{run_id}/confirm", response_class=HTMLResponse)
-async def get_teacher_confirm_page(request: Request, run_id: str):
+@router.get("/web/teacher/tags/{run_id}/confirm", response_class=HTMLResponse)
+async def get_teacher_confirm_page(
+    run_id: str,
+    request: Request,
+    store: Store = Depends(get_store),
+):
+    state = store.get_state(run_id)
     return templates.TemplateResponse(
-        request=request,
-        name="teacher_confirm.html",
-        context={
-            "run_id": run_id,
-        },
+        "teacher_confirm.html",
+        {"request": request, "run_id": run_id, "state": state.value if hasattr(state, "value") else str(state)},
     )

@@ -1,90 +1,92 @@
-"""
-Server-rendered web endpoints for student test submissions.
-Authoritative contract: Contracts.md Sections D.6.
-"""
+# web/student.py
+"""Server-rendered callback UI for student attempts (no-JS fallback)."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from synapse.runtime.service import get_service
-from synapse.schemas import RecordKind, Test
+from api.dependencies import get_settings_dep, get_store
+from slice.config import Settings
+from slice.store import Store
+from synapse.runtime.flow import submit_attempt
+from synapse.schemas import Attempt, Diagnosis, NoteVersion, RecordKind, Test
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-router = APIRouter(prefix="/web/student", tags=["web_student"])
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+router = APIRouter(tags=["web-student"])
 
 
-@router.get("/attempts/{test_id}", response_class=HTMLResponse)
-async def get_student_attempt_page(request: Request, test_id: str):
-    service = get_service()
-
-    target_run_id = None
-    test_obj = None
-    for run in service.store.list_runs(limit=100):
-        t = service.store.latest(run["id"], RecordKind.TEST.value)
-        if t and (t.get("id") == test_id or run["id"] == test_id):
-            target_run_id = run["id"]
-            test_obj = Test.model_validate(t)
+@router.get("/web/student/attempts/{test_id}", response_class=HTMLResponse)
+async def get_student_attempt_form(
+    test_id: str,
+    request: Request,
+    store: Store = Depends(get_store),
+):
+    runs = store.list_runs(limit=100)
+    target_test = None
+    for r in runs:
+        t_data = store.latest(r["id"], RecordKind.TEST)
+        if t_data and t_data.get("id") == test_id:
+            target_test = Test.model_validate(t_data)
             break
 
-    if not test_obj:
+    if not target_test:
         raise HTTPException(status_code=404, detail="Test not found")
 
     return templates.TemplateResponse(
-        request=request,
-        name="student_attempt.html",
-        context={
-            "test": test_obj,
-            "run_id": target_run_id,
-        },
+        "student_attempt.html",
+        {"request": request, "test": target_test},
     )
 
 
-@router.post("/attempts/{test_id}")
-async def post_student_attempt(request: Request, test_id: str):
-    service = get_service()
+@router.post("/web/student/attempts/{test_id}", response_class=HTMLResponse)
+async def post_student_attempt(
+    test_id: str,
+    request: Request,
+    store: Store = Depends(get_store),
+    settings: Settings = Depends(get_settings_dep),
+):
     form_data = await request.form()
-    run_id = form_data.get("run_id")
+    student_id = str(form_data.get("student_id", "student_1"))
 
-    if not run_id:
-        for run in service.store.list_runs(limit=100):
-            t = service.store.latest(run["id"], RecordKind.TEST.value)
-            if t and (t.get("id") == test_id or run["id"] == test_id):
-                run_id = run["id"]
-                break
+    target_run_id = None
+    target_test = None
+    runs = store.list_runs(limit=100)
+    for r in runs:
+        t_data = store.latest(r["id"], RecordKind.TEST)
+        if t_data and t_data.get("id") == test_id:
+            target_run_id = r["id"]
+            target_test = Test.model_validate(t_data)
+            break
 
-    if not run_id:
-        raise HTTPException(status_code=404, detail="Run not found for test")
+    if not target_run_id or not target_test:
+        raise HTTPException(status_code=404, detail="Test not found")
 
     answers = {}
-    for key, val in form_data.items():
-        if key.startswith("q_"):
-            qid = key[2:]
-            answers[qid] = str(val)
+    for q in target_test.questions:
+        if q.id in form_data:
+            answers[q.id] = str(form_data[q.id])
 
-    student_id = "web_student_01"
-    try:
-        resp = service.submit_attempt(
-            run_id=str(run_id),
-            student_id=student_id,
-            test_id=test_id,
-            answers=answers,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    submit_attempt(
+        store=store,
+        run_id=target_run_id,
+        student_id=student_id,
+        test_id=test_id,
+        answers=answers,
+        settings=settings,
+    )
 
-    return JSONResponse(
-        content={
-            "status": "success",
-            "message": "Assessment submitted and analyzed successfully.",
-            "run_id": str(run_id),
-            "diagnosis": resp.diagnosis,
-            "score": resp.attempt.get("score") if resp.attempt else None,
-            "total": resp.attempt.get("total") if resp.attempt else None,
-        }
+    attempt_data = store.latest(target_run_id, RecordKind.ATTEMPT)
+    diag_data = store.latest(target_run_id, RecordKind.DIAGNOSIS)
+    note_data = store.latest(target_run_id, RecordKind.NOTE_VERSION)
+
+    return templates.TemplateResponse(
+        "student_result.html",
+        {
+            "request": request,
+            "attempt": Attempt.model_validate(attempt_data),
+            "diagnosis": Diagnosis.model_validate(diag_data),
+            "note": NoteVersion.model_validate(note_data),
+        },
     )

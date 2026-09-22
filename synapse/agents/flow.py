@@ -1,14 +1,13 @@
-"""
-Flow handlers for Person 2 agents domain: diagnosing, tailoring, reviewing.
-Authoritative contract: Contracts.md Sections A.5, C.2, C.3, D.2, D.4.
-"""
+# synapse/agents/flow.py
+"""State machine flow handlers for Person 2 (diagnosing, tailoring, reviewing)."""
 from __future__ import annotations
 
-from typing import Any
-from slice.runner import Context
-from synapse.agents.diagnosis import diagnose
-from synapse.agents.review import review
-from synapse.agents.tailoring import tailor
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable
+
+from synapse.agents.stub import stub_diagnose, stub_review_note, stub_tailor_note
 from synapse.schemas import (
     Attempt,
     CanonicalNote,
@@ -17,194 +16,305 @@ from synapse.schemas import (
     RecordKind,
     ReviewResult,
     ReviewStatus,
-    StudentHistory,
     Test,
-    TestQuestion,
 )
-from synapse.state_machine import RunState, state_after_review
+from synapse.state_machine import RunState, resolve_review_status, state_after_review
+
+_PROMPTS = Path(__file__).parent / "prompts"
 
 
-def _get_revisions_so_far(ctx: Context) -> int:
-    """Number of failed review records already stored for this run + cycle."""
-    review_history = ctx.history(RecordKind.REVIEW.value)
-    count = 0
-    for r in review_history:
-        p = r.payload if hasattr(r, "payload") else r
-        status = p.get("status")
-        passed = p.get("passed", True)
-        if status == ReviewStatus.FAILED.value or (not passed and status != ReviewStatus.REVISION_LIMIT_REACHED.value):
-            count += 1
-    return count
+def _read_prompt(name: str) -> str:
+    path = _PROMPTS / f"{name}.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
-def handle_diagnosing(ctx: Context) -> RunState:
-    """Diagnose student attempt against test questions and transition to TAILORING."""
-    attempt_dict = ctx.latest(RecordKind.ATTEMPT.value)
-    test_dict = ctx.latest(RecordKind.TEST.value)
-    canonical_dict = ctx.latest(RecordKind.CANONICAL_NOTE.value)
+def _has_model_access(settings: Any) -> bool:
+    if settings is None:
+        return False
+    if hasattr(settings, "active_api_key"):
+        return bool(settings.active_api_key)
+    try:
+        from slice.llm import get_provider_config
+        pcfg = get_provider_config(settings)
+        return bool(pcfg.api_key)
+    except Exception:
+        return False
 
-    scope = ctx.store.meta(ctx.run_id).get("scope", {})
-    concept_id = scope.get("concept_id", "default_concept")
-    student_id = scope.get("student_id", "student_01")
 
-    if attempt_dict:
-        attempt = Attempt.model_validate(attempt_dict)
-    else:
-        # Fallback if attempt was not yet placed in latest
-        attempt = Attempt(
-            student_id=student_id,
-            test_id="test_default",
-            concept_id=concept_id,
-            answers={},
-            score=0,
-            total=1,
+def diagnose(
+    attempt: Attempt,
+    test: Test | None = None,
+    canonical: CanonicalNote | None = None,
+    call: Callable | None = None,
+    settings: Any = None,
+    budget: Any = None,
+) -> Diagnosis:
+    """Classifies mistakes, estimates mastery, and detects trend via slice.llm.complete."""
+    if call is None:
+        try:
+            from slice.llm import complete as default_complete
+            call = default_complete
+        except ImportError:
+            call = None
+
+    if call is not None and settings is not None and budget is not None and _has_model_access(settings):
+        prompt = _read_prompt("diagnosis")
+        question_context = []
+        if test and test.questions:
+            for q in test.questions:
+                student_ans = attempt.answers.get(q.id, "")
+                question_context.append({
+                    "question_id": q.id,
+                    "question_text": q.text,
+                    "options": q.options,
+                    "correct_answer": q.correct_answer,
+                    "concept_id": q.concept_id,
+                    "student_answer": student_ans,
+                    "is_correct": student_ans == q.correct_answer,
+                })
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Student ID: {attempt.student_id}\n"
+                    f"Concept ID: {attempt.concept_id}\n"
+                    f"Attempt Score: {attempt.score}/{attempt.total}\n"
+                    f"Evaluation Context:\n{json.dumps(question_context, indent=2)}\n\n"
+                    f"Analyze the student's attempt. Return a structured Diagnosis JSON object "
+                    f"with student_id, concept_id, items, mastery_estimate (0.0 to 1.0), and trend."
+                ),
+            },
+        ]
+        res = call(
+            settings=settings,
+            budget=budget,
+            messages=messages,
+            schema=Diagnosis,
+            step="diagnosis",
         )
+        if res and isinstance(res, Diagnosis):
+            res.student_id = attempt.student_id
+            res.concept_id = attempt.concept_id
+            return res
+        raise RuntimeError("Model returned invalid diagnosis schema.")
 
-    if test_dict:
-        test = Test.model_validate(test_dict)
-    else:
-        test = Test(
-            id="test_default",
-            concept_id=concept_id,
-            concept_name="General",
-            questions=[
-                TestQuestion(
-                    id="q_default",
-                    text=f"Basic diagnostic item for {concept_id}",
-                    correct_answer="Correct",
-                    options=["Correct", "Choice B", "Choice C", "Choice D"],
-                    concept_id=concept_id,
-                )
+    return stub_diagnose(attempt, test, canonical)
+
+
+def tailor_note(
+    student_id: str,
+    concept_id: str,
+    diagnosis: Diagnosis,
+    canonical_note: CanonicalNote | None = None,
+    canonical_name: str | None = None,
+    version: int = 1,
+    existing_concepts: list[str] | None = None,
+    objections: list[str] | None = None,
+    call: Callable | None = None,
+    settings: Any = None,
+    budget: Any = None,
+) -> NoteVersion:
+    """Generates candidate markdown note with mistake pattern table and [[links]]."""
+    if canonical_name is None:
+        if canonical_note and canonical_note.extracted_concepts:
+            canonical_name = canonical_note.extracted_concepts[0].name
+        else:
+            canonical_name = "Recursion"
+
+    if call is None:
+        try:
+            from slice.llm import complete as default_complete
+            call = default_complete
+        except ImportError:
+            call = None
+
+    if call is not None and settings is not None and budget is not None and _has_model_access(settings):
+        prompt = _read_prompt("tailoring")
+        diag_summary = {
+            "mastery_estimate": diagnosis.mastery_estimate,
+            "trend": diagnosis.trend.value if hasattr(diagnosis.trend, "value") else str(diagnosis.trend),
+            "items": [
+                {
+                    "question_id": item.question_id,
+                    "classification": item.classification.value if hasattr(item.classification, "value") else str(item.classification),
+                    "reason": item.reason,
+                }
+                for item in diagnosis.items
             ],
+        }
+        available_concepts = existing_concepts or [canonical_name]
+        messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Student ID: {student_id}\n"
+                    f"Concept: {canonical_name}\n"
+                    f"Version: {version}\n"
+                    f"Authoritative AI Diagnosis:\n{json.dumps(diag_summary, indent=2)}\n\n"
+                    f"Available Concepts for [[links]]: {available_concepts}\n"
+                    + (f"Reviewer objections to resolve:\n{objections}\n" if objections else "")
+                    + "\nWrite the complete personalized markdown study note addressing the diagnosed gaps."
+                ),
+            },
+        ]
+        markdown_res = call(
+            settings=settings,
+            budget=budget,
+            messages=messages,
+            step="tailoring",
         )
+        if markdown_res and isinstance(markdown_res, str) and len(markdown_res.strip()) > 10:
+            return NoteVersion(
+                student_id=student_id,
+                concept_id=concept_id,
+                version=version,
+                markdown=markdown_res.strip(),
+                diagnosis_id=diagnosis.id,
+            )
+        raise RuntimeError("Model returned invalid tailored note output.")
 
-    canonical_note = CanonicalNote.model_validate(canonical_dict) if canonical_dict else None
+    return stub_tailor_note(
+        student_id=student_id,
+        concept_id=concept_id,
+        diagnosis=diagnosis,
+        canonical_name=canonical_name,
+        version=version,
+        existing_concepts=existing_concepts or [canonical_name],
+        objections=objections,
+    )
 
-    # Run diagnosis
-    diagnosis_record = diagnose(
+
+def review_note(
+    note: NoteVersion,
+    diagnosis: Diagnosis,
+    canonical_note: CanonicalNote,
+    existing_concepts: set[str] | None = None,
+    revisions_so_far: int = 0,
+    force_fail: bool = False,
+    call: Callable | None = None,
+    settings: Any = None,
+    budget: Any = None,
+) -> ReviewResult:
+    """Validates candidate note against coverage, diagnosis, links, and quality."""
+    return stub_review_note(
+        note=note,
+        diagnosis=diagnosis,
+        canonical_note=canonical_note,
+        existing_concepts=existing_concepts,
+        revisions_so_far=revisions_so_far,
+        force_fail=force_fail,
+    )
+
+
+async def handle_diagnosing(ctx: Any) -> RunState:
+    """Diagnoses student misconceptions from their latest test attempt."""
+    # Idempotency check: if authoritative diagnosis already exists, reuse it!
+    existing_diag = ctx.latest(RecordKind.DIAGNOSIS)
+    if existing_diag is not None:
+        return RunState.TAILORING
+
+    attempt_data = ctx.latest(RecordKind.ATTEMPT)
+    if attempt_data is None:
+        return RunState.ATTEMPT_RECEIVED
+
+    attempt = Attempt.model_validate(attempt_data)
+    test_data = ctx.latest(RecordKind.TEST)
+    test = Test.model_validate(test_data) if test_data else None
+
+    note_data = ctx.latest(RecordKind.CANONICAL_NOTE)
+    canonical = CanonicalNote.model_validate(note_data) if note_data else None
+
+    diagnosis_rec = diagnose(
         attempt=attempt,
         test=test,
-        canonical_note=canonical_note,
-        settings=ctx.settings,
-        budget=ctx.budget,
+        canonical=canonical,
+        settings=getattr(ctx, "settings", None),
+        budget=getattr(ctx, "budget", None),
     )
 
-    ctx.append(
-        RecordKind.DIAGNOSIS.value,
-        diagnosis_record.model_dump(mode="json"),
-        produced_by="agents:diagnostician",
-    )
-
+    ctx.append(RecordKind.DIAGNOSIS, diagnosis_rec.model_dump(mode="json"), produced_by="agent:diagnosis")
     return RunState.TAILORING
 
 
-def handle_tailoring(ctx: Context) -> RunState:
-    """Produce personalized note candidate and transition to REVIEWING."""
-    canonical_dict = ctx.latest(RecordKind.CANONICAL_NOTE.value)
-    diagnosis_dict = ctx.latest(RecordKind.DIAGNOSIS.value)
+async def handle_tailoring(ctx: Any) -> RunState:
+    """Generates candidate personalized markdown note using the authoritative diagnosis."""
+    diag_data = ctx.latest(RecordKind.DIAGNOSIS)
+    if diag_data is None:
+        return RunState.DIAGNOSING
+    diagnosis = Diagnosis.model_validate(diag_data)
 
-    scope = ctx.store.meta(ctx.run_id).get("scope", {})
-    concept_id = scope.get("concept_id", "default_concept")
-    student_id = scope.get("student_id", "student_01")
+    note_data = ctx.latest(RecordKind.CANONICAL_NOTE)
+    canonical = CanonicalNote.model_validate(note_data) if note_data else None
 
-    canonical_note = (
-        CanonicalNote.model_validate(canonical_dict)
-        if canonical_dict
-        else CanonicalNote(concept_id=concept_id, markdown=f"# Concept {concept_id}\nContent")
-    )
+    # Check previous finalized note version if any
+    prev_note_data = ctx.latest(RecordKind.NOTE_VERSION)
+    version = 1
+    if prev_note_data:
+        version = int(prev_note_data.get("version", 0)) + 1
 
-    diagnosis = (
-        Diagnosis.model_validate(diagnosis_dict)
-        if diagnosis_dict
-        else Diagnosis(
-            student_id=student_id,
-            concept_id=concept_id,
-            mastery_estimate=0.5,
-            trend="new",
-        )
-    )
+    # Check if there were objections from a previous failed review in this cycle
+    rev_data = ctx.latest(RecordKind.REVIEW)
+    objections = None
+    if rev_data and not rev_data.get("passed", True):
+        objections = rev_data.get("objections", [])
+    elif ctx.latest(RecordKind.NOTE_CANDIDATE) is not None and rev_data and rev_data.get("passed", True):
+        # Idempotency: review already passed for existing candidate note
+        return RunState.REVIEWING
 
-    # Check for previous review objections in this cycle
-    objections: list[str] = []
-    latest_review = ctx.latest(RecordKind.REVIEW.value)
-    if latest_review and not latest_review.get("passed", True):
-        objections = latest_review.get("objections", [])
+    existing_names = [c.name for c in (canonical.extracted_concepts if canonical else [])]
 
-    # Monotonic version per student + concept
-    prev_final_note = ctx.latest(RecordKind.NOTE_VERSION.value)
-    version = (prev_final_note.get("version", 0) if prev_final_note else 0) + 1
-
-    candidate = tailor(
-        canonical_note=canonical_note,
+    candidate = tailor_note(
+        student_id=diagnosis.student_id,
+        concept_id=diagnosis.concept_id,
         diagnosis=diagnosis,
-        objections=objections,
+        canonical_note=canonical,
         version=version,
-        settings=ctx.settings,
-        budget=ctx.budget,
+        existing_concepts=existing_names,
+        objections=objections,
+        settings=getattr(ctx, "settings", None),
+        budget=getattr(ctx, "budget", None),
     )
 
-    ctx.append(
-        RecordKind.NOTE_CANDIDATE.value,
-        candidate.model_dump(mode="json"),
-        produced_by="agents:tailor",
-    )
-
+    ctx.append(RecordKind.NOTE_CANDIDATE, candidate.model_dump(mode="json"), produced_by="agent:tailoring")
     return RunState.REVIEWING
 
 
-def handle_reviewing(ctx: Context) -> RunState:
-    """Review note candidate. Loops to TAILORING on failure (up to 3 times) or transitions to NOTE_SAVED."""
-    canonical_dict = ctx.latest(RecordKind.CANONICAL_NOTE.value)
-    candidate_dict = ctx.latest(RecordKind.NOTE_CANDIDATE.value)
-    diagnosis_dict = ctx.latest(RecordKind.DIAGNOSIS.value)
+async def handle_reviewing(ctx: Any) -> RunState:
+    """Validates candidate note and controls the revision loop back-edge."""
+    cand_data = ctx.latest(RecordKind.NOTE_CANDIDATE)
+    if cand_data is None:
+        return RunState.TAILORING
+    candidate = NoteVersion.model_validate(cand_data)
 
-    scope = ctx.store.meta(ctx.run_id).get("scope", {})
-    concept_id = scope.get("concept_id", "default_concept")
-    student_id = scope.get("student_id", "student_01")
+    diag_data = ctx.latest(RecordKind.DIAGNOSIS)
+    diagnosis = Diagnosis.model_validate(diag_data) if diag_data else Diagnosis(student_id="s", concept_id="c")
 
-    canonical_note = (
-        CanonicalNote.model_validate(canonical_dict)
-        if canonical_dict
-        else CanonicalNote(concept_id=concept_id, markdown=f"# Concept {concept_id}\nContent")
-    )
+    note_data = ctx.latest(RecordKind.CANONICAL_NOTE)
+    canonical = CanonicalNote.model_validate(note_data) if note_data else CanonicalNote(concept_id="c", markdown="Recursion")
 
-    candidate = (
-        NoteVersion.model_validate(candidate_dict)
-        if candidate_dict
-        else NoteVersion(
-            student_id=student_id,
-            concept_id=concept_id,
-            version=1,
-            markdown=canonical_note.markdown,
-        )
-    )
+    existing_names = set(c.name for c in canonical.extracted_concepts) if canonical.extracted_concepts else {"Recursion"}
 
-    diagnosis = (
-        Diagnosis.model_validate(diagnosis_dict)
-        if diagnosis_dict
-        else Diagnosis(
-            student_id=student_id,
-            concept_id=concept_id,
-            mastery_estimate=0.5,
-            trend="new",
-        )
-    )
+    # Count failed reviews for this run + cycle
+    history_reviews = ctx.history(RecordKind.REVIEW)
+    revisions_so_far = sum(1 for r in history_reviews if getattr(r, "payload", {}).get("status") == ReviewStatus.FAILED.value)
 
-    revisions_so_far = _get_revisions_so_far(ctx)
-
-    review_result = review(
-        canonical_note=canonical_note,
-        candidate=candidate,
+    review_res = review_note(
+        note=candidate,
         diagnosis=diagnosis,
+        canonical_note=canonical,
+        existing_concepts=existing_names,
         revisions_so_far=revisions_so_far,
-        settings=ctx.settings,
-        budget=ctx.budget,
+        settings=getattr(ctx, "settings", None),
+        budget=getattr(ctx, "budget", None),
     )
 
-    ctx.append(
-        RecordKind.REVIEW.value,
-        review_result.model_dump(mode="json"),
-        produced_by="agents:reviewer",
-    )
+    ctx.append(RecordKind.REVIEW, review_res.model_dump(mode="json"), produced_by="agent:review")
 
-    return state_after_review(review_result.status)
+    # Determine next state: TAILORING if failed < limit; NOTE_SAVED if passed or limit reached
+    next_state = state_after_review(review_res.status)
+    return next_state
